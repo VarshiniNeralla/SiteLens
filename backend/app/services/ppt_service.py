@@ -1,3 +1,4 @@
+from io import BytesIO
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml import parse_xml
 from pptx.oxml.ns import nsdecls
+from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Emu, Inches, Pt
 
 from app.config import settings
@@ -22,21 +24,22 @@ SLIDE_H_IN = 7.5
 OBS_PER_SLIDE = 3
 
 # Layout constants (inches).
-MARGIN_X = 0.35
-TITLE_TOP = 0.16
-TITLE_H = 0.32
-SUBTITLE_TOP = 0.50
-SUBTITLE_H = 0.26
-CONTENT_TOP = 0.86
-CONTENT_BOTTOM_MARGIN = 0.22
-BLOCK_GAP = 0.20
-INNER_GAP = 0.07
-IMAGE_H = 2.15
-TABLE_TOP_GAP = 0.08
+MARGIN_X = 0.45
+TITLE_TOP = 0.13
+TITLE_H = 0.30
+SUBTITLE_TOP = 0.43
+SUBTITLE_H = 0.22
+CONTENT_TOP = 0.80
+CONTENT_BOTTOM_MARGIN = 0.18
+IMAGE_H = 2.28
+TABLE_TOP_GAP = 0.06
 
 TITLE_COLOR = RGBColor(155, 0, 0)
 TEXT_COLOR = RGBColor(0, 0, 0)
 HEADER_FILL = RGBColor(242, 242, 242)
+VALUE_FILL = RGBColor(255, 255, 255)
+FONT_FAMILY = "Arial"
+LINE_W_EMU = 12700
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,14 @@ def _d(v: object) -> str:
         return iso if iso else "—"
     s = str(v).strip() if v is not None else ""
     return s if s else "—"
+
+
+def _fixed_grid_geometry() -> tuple[float, float, float]:
+    """Return fixed 3-column geometry, regardless of populated count."""
+    gap = 0.18
+    block_w = (SLIDE_W_IN - 2 * MARGIN_X - 2 * gap) / 3
+    left_start = MARGIN_X
+    return left_start, block_w, gap
 
 
 def _observation_rows(obs: ObservationRecord, obs_no: int) -> list[tuple[str, str]]:
@@ -114,13 +125,51 @@ def _fit_with_aspect_bottom_aligned(box: Rect, image_path: Path) -> Rect:
 def _set_cell_border_thin_black(cell: object) -> None:
     tc = cell._tc  # type: ignore[attr-defined]
     tc_pr = tc.get_or_add_tcPr()
+    # Remove any inherited/default border XML to prevent thick/double border artifacts.
+    for child in list(tc_pr):
+        if child.tag.endswith(("lnL", "lnR", "lnT", "lnB")):
+            tc_pr.remove(child)
     for edge in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
         line = parse_xml(
-            f"<{edge} w='12700' cap='flat' cmpd='sng' algn='ctr' {nsdecls('a')}>"
+            f"<{edge} w='{LINE_W_EMU}' cap='flat' cmpd='sng' algn='ctr' {nsdecls('a')}>"
             "<a:solidFill><a:srgbClr val='000000'/></a:solidFill>"
             "<a:prstDash val='solid'/></{edge}>".replace("{edge}", edge)
         )
         tc_pr.append(line)
+
+
+def _clear_table_style(table: object) -> None:
+    tbl_pr = table._tbl.tblPr  # type: ignore[attr-defined]
+    for child in list(tbl_pr):
+        if child.tag.endswith("tableStyleId"):
+            tbl_pr.remove(child)
+    style_id = OxmlElement("a:tableStyleId")
+    style_id.text = "{00000000-0000-0000-0000-000000000000}"
+    tbl_pr.append(style_id)
+    table.first_row = False
+    table.last_row = False
+    table.first_col = False
+    table.last_col = False
+    table.horz_banding = False
+    table.vert_banding = False
+
+
+def _write_cell_text(cell: object, text: str, *, size_pt: float = 9.6) -> None:
+    tf = cell.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    tf.margin_left = Inches(0.045)
+    tf.margin_right = Inches(0.045)
+    tf.margin_top = Inches(0.015)
+    tf.margin_bottom = Inches(0.015)
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT
+    run = p.add_run()
+    run.text = text
+    run.font.name = FONT_FAMILY
+    run.font.size = Pt(size_pt)
+    run.font.bold = False
+    run.font.color.rgb = TEXT_COLOR
 
 
 def _add_header(slide: object, subtitle: str) -> None:
@@ -135,7 +184,8 @@ def _add_header(slide: object, subtitle: str) -> None:
     p = tf.paragraphs[0]
     run = p.add_run()
     run.text = "Quality walkthrough - Observation"
-    run.font.size = Pt(22)
+    run.font.name = FONT_FAMILY
+    run.font.size = Pt(23)
     run.font.bold = True
     run.font.italic = True
     run.font.color.rgb = TITLE_COLOR
@@ -152,10 +202,89 @@ def _add_header(slide: object, subtitle: str) -> None:
     sp = stf.paragraphs[0]
     srun = sp.add_run()
     srun.text = subtitle
-    srun.font.size = Pt(16)
+    srun.font.name = FONT_FAMILY
+    srun.font.size = Pt(14)
     srun.font.italic = True
     srun.font.color.rgb = TITLE_COLOR
     sp.alignment = PP_ALIGN.LEFT
+
+
+def _add_rect_border(slide: object, box: Rect) -> None:
+    rect = slide.shapes.add_shape(
+        1,  # MSO_AUTO_SHAPE_TYPE.RECTANGLE
+        Inches(box.left),
+        Inches(box.top),
+        Inches(box.width),
+        Inches(box.height),
+    )
+    rect.fill.background()
+    rect.line.color.rgb = TEXT_COLOR
+    rect.line.width = Emu(LINE_W_EMU)
+
+
+def _add_cropped_image(slide: object, image_box: Rect, image_path: Path) -> None:
+    with Image.open(image_path) as im:
+        img_w, img_h = im.size
+        if img_w <= 0 or img_h <= 0:
+            raise ValueError("Image has invalid dimensions")
+        target_ratio = image_box.width / image_box.height
+        img_ratio = img_w / img_h
+        if img_ratio > target_ratio:
+            crop_h = img_h
+            crop_w = int(crop_h * target_ratio)
+            left = (img_w - crop_w) // 2
+            top = 0
+        else:
+            crop_w = img_w
+            crop_h = int(crop_w / target_ratio)
+            left = 0
+            top = (img_h - crop_h) // 2
+        cropped = im.crop((left, top, left + crop_w, top + crop_h))
+        buff = BytesIO()
+        cropped.save(buff, format="PNG")
+        buff.seek(0)
+
+    slide.shapes.add_picture(
+        buff,
+        Inches(image_box.left),
+        Inches(image_box.top),
+        width=Inches(image_box.width),
+        height=Inches(image_box.height),
+    )
+
+
+def _add_footer(slide: object, project_name: str, slide_no: int) -> None:
+    left_box = slide.shapes.add_textbox(
+        Inches(MARGIN_X),
+        Inches(SLIDE_H_IN - 0.22),
+        Inches(5.0),
+        Inches(0.16),
+    )
+    ltf = left_box.text_frame
+    ltf.clear()
+    lp = ltf.paragraphs[0]
+    lr = lp.add_run()
+    lr.text = project_name
+    lr.font.name = FONT_FAMILY
+    lr.font.size = Pt(8)
+    lr.font.color.rgb = TEXT_COLOR
+    lp.alignment = PP_ALIGN.LEFT
+
+    right_box = slide.shapes.add_textbox(
+        Inches(SLIDE_W_IN - MARGIN_X - 1.2),
+        Inches(SLIDE_H_IN - 0.22),
+        Inches(1.2),
+        Inches(0.16),
+    )
+    rtf = right_box.text_frame
+    rtf.clear()
+    rp = rtf.paragraphs[0]
+    rr = rp.add_run()
+    rr.text = str(slide_no)
+    rr.font.name = FONT_FAMILY
+    rr.font.size = Pt(8)
+    rr.font.color.rgb = TEXT_COLOR
+    rp.alignment = PP_ALIGN.RIGHT
 
 
 def _add_missing_image_placeholder(slide: object, image_box: Rect, image_path: Path) -> None:
@@ -170,6 +299,7 @@ def _add_missing_image_placeholder(slide: object, image_box: Rect, image_path: P
     p = tf.paragraphs[0]
     r = p.add_run()
     r.text = f"Image missing\n{image_path.name}"
+    r.font.name = FONT_FAMILY
     r.font.size = Pt(9)
     r.font.color.rgb = TEXT_COLOR
     p.alignment = PP_ALIGN.CENTER
@@ -186,8 +316,9 @@ def _add_table(slide: object, table_box: Rect, obs: ObservationRecord, obs_no: i
         Inches(table_box.width),
         Inches(table_box.height),
     ).table
+    _clear_table_style(table)
 
-    left_col_w = table_box.width * 0.52
+    left_col_w = table_box.width * 0.44
     table.columns[0].width = Inches(left_col_w)
     table.columns[1].width = Inches(table_box.width - left_col_w)
 
@@ -198,23 +329,15 @@ def _add_table(slide: object, table_box: Rect, obs: ObservationRecord, obs_no: i
         c0 = row.cells[0]
         c1 = row.cells[1]
 
-        c0.text = label
-        c1.text = value
+        _write_cell_text(c0, label, size_pt=9.4)
+        _write_cell_text(c1, value, size_pt=9.4)
         c0.vertical_anchor = MSO_ANCHOR.MIDDLE
         c1.vertical_anchor = MSO_ANCHOR.MIDDLE
 
-        p0 = c0.text_frame.paragraphs[0]
-        p1 = c1.text_frame.paragraphs[0]
-        p0.alignment = PP_ALIGN.LEFT
-        p1.alignment = PP_ALIGN.LEFT
-        for p in (p0, p1):
-            if p.runs:
-                p.runs[0].font.size = Pt(8.5)
-                p.runs[0].font.bold = False
-                p.runs[0].font.color.rgb = TEXT_COLOR
-
         c0.fill.solid()
         c0.fill.fore_color.rgb = HEADER_FILL
+        c1.fill.solid()
+        c1.fill.fore_color.rgb = VALUE_FILL
 
         _set_cell_border_thin_black(c0)
         _set_cell_border_thin_black(c1)
@@ -236,18 +359,14 @@ def _render_observation_block(
         img_path = cwd / img_path
 
     if img_path.is_file():
-        fit = _fit_with_aspect_bottom_aligned(image_box, img_path)
-        slide.shapes.add_picture(
-            str(img_path.resolve()),
-            Inches(fit.left),
-            Inches(fit.top),
-            width=Inches(fit.width),
-            height=Inches(fit.height),
-        )
+        _add_cropped_image(slide, image_box, img_path)
+        _add_rect_border(slide, image_box)
     else:
         _add_missing_image_placeholder(slide, image_box, img_path)
+        _add_rect_border(slide, image_box)
 
     _add_table(slide, table_box, obs, obs_no)
+    _add_rect_border(slide, block)
 
 
 def _blank_slide_layout(prs: Presentation):  # noqa: ANN001
@@ -287,14 +406,14 @@ def build_quality_report_pptx(
     cwd = Path.cwd()
 
     content_height = SLIDE_H_IN - CONTENT_TOP - CONTENT_BOTTOM_MARGIN
-    block_width = (SLIDE_W_IN - 2 * MARGIN_X - 2 * BLOCK_GAP) / OBS_PER_SLIDE
 
     for group_idx, group in enumerate(_chunks(observations, OBS_PER_SLIDE), start=1):
         slide = prs.slides.add_slide(blank)
         _add_header(slide, _resolve_subtitle(group))
+        left_start, block_width, gap = _fixed_grid_geometry()
 
         for idx, obs in enumerate(group):
-            left = MARGIN_X + idx * (block_width + BLOCK_GAP)
+            left = left_start + idx * (block_width + gap)
             block = Rect(left, CONTENT_TOP, block_width, content_height)
             _render_observation_block(
                 slide,
@@ -303,6 +422,7 @@ def build_quality_report_pptx(
                 block=block,
                 cwd=cwd,
             )
+        _add_footer(slide, project_name=project_name, slide_no=group_idx)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))

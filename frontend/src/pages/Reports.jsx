@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useLocation } from 'react-router-dom'
 import {
   Calendar,
   CheckCheck,
+  ChevronLeft,
+  ChevronRight,
   CircleOff,
   Download,
-  Eye,
   FileText,
   Layers,
   MoreHorizontal,
@@ -71,7 +73,9 @@ function ConfirmDialog({ open, title, body, confirmLabel = 'Delete', busy, onCon
 }
 
 export function ReportsPage() {
+  const location = useLocation()
   const QUEUE_PAGE_SIZE = 4
+  const reportCardRefs = useRef(new Map())
   const [observations, setObservations] = useState([])
   const [reports, setReports] = useState([])
   const [selected, setSelected] = useState(() => new Set())
@@ -85,6 +89,8 @@ export function ReportsPage() {
   const [menuOpen, setMenuOpen] = useState(null)
   const [confirmState, setConfirmState] = useState(null)
   const [queuePage, setQueuePage] = useState(1)
+  const [highlightedReportId, setHighlightedReportId] = useState(null)
+  const [selectedReportIds, setSelectedReportIds] = useState(() => new Set())
 
   const load = async () => {
     setLoading(true)
@@ -93,6 +99,12 @@ export function ReportsPage() {
       const [obsRows, repRows] = await Promise.all([listObservations(), listReports()])
       setObservations(obsRows)
       setReports(repRows)
+      setSelectedReportIds((prev) => {
+        const valid = new Set(repRows.map((r) => r.id))
+        const next = new Set()
+        for (const id of prev) if (valid.has(id)) next.add(id)
+        return next
+      })
     } catch (e) {
       setError(e.message || 'Unable to load report workspace')
     } finally {
@@ -103,6 +115,24 @@ export function ReportsPage() {
   useEffect(() => {
     queueMicrotask(() => void load())
   }, [])
+
+  useEffect(() => {
+    const id = location.state?.highlightReportId
+    if (!id) return
+    const startId = setTimeout(() => setHighlightedReportId(id), 0)
+    const clearId = setTimeout(() => setHighlightedReportId(null), 2600)
+    const scrollId = setTimeout(() => {
+      const el = reportCardRefs.current.get(id)
+      if (el instanceof HTMLElement) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+      }
+    }, 120)
+    return () => {
+      clearTimeout(startId)
+      clearTimeout(scrollId)
+      clearTimeout(clearId)
+    }
+  }, [location.state])
 
   useEffect(() => {
     if (!error) return undefined
@@ -148,6 +178,23 @@ export function ReportsPage() {
 
   const deselectAll = () => {
     setSelected(new Set())
+  }
+
+  const toggleReportSelect = (id) => {
+    setSelectedReportIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAllReports = () => {
+    setSelectedReportIds(new Set(reports.map((r) => r.id)))
+  }
+
+  const deselectAllReports = () => {
+    setSelectedReportIds(new Set())
   }
 
   const onGenerate = async (ids = null, forcedTitle = null) => {
@@ -254,12 +301,43 @@ export function ReportsPage() {
     try {
       await deleteReport(reportId)
       setReports((prev) => prev.filter((r) => r.id !== reportId))
+      setSelectedReportIds((prev) => {
+        const next = new Set(prev)
+        next.delete(reportId)
+        return next
+      })
       setNotice(`Deck #${reportId} deleted.`)
       setConfirmState(null)
     } catch (e) {
       setError(e.message || 'Could not delete deck')
       setConfirmState(null)
     }
+  }
+
+  const bulkDeleteReportsFlow = async () => {
+    const ids = confirmState?.reportIds ?? []
+    if (!ids.length) return
+    setConfirmState((s) => ({ ...s, busy: true }))
+    const failed = []
+    for (const id of ids) {
+      try {
+        await deleteReport(id)
+      } catch {
+        failed.push(id)
+      }
+    }
+    const deletedSet = new Set(ids.filter((id) => !failed.includes(id)))
+    if (deletedSet.size) {
+      setReports((prev) => prev.filter((r) => !deletedSet.has(r.id)))
+      setSelectedReportIds((prev) => {
+        const next = new Set(prev)
+        for (const id of deletedSet) next.delete(id)
+        return next
+      })
+    }
+    if (failed.length) setError(`Could not delete ${failed.length} deck(s).`)
+    else setNotice(`${deletedSet.size} deck(s) deleted.`)
+    setConfirmState(null)
   }
 
   const saveEditObservation = async () => {
@@ -331,9 +409,9 @@ export function ReportsPage() {
             <RefreshCw className="h-4 w-4" />
             Refresh
           </ButtonSecondary>
-          <ButtonPrimary className="px-4 py-2.5 text-[13px]" disabled={busy || !selectedRows.length || !sameProject} onClick={() => void onGenerate()}>
+          {/* <ButtonPrimary className="px-4 py-2.5 text-[13px]" disabled={busy || !selectedRows.length || !sameProject} onClick={() => void onGenerate()}>
             {busy ? 'Generating…' : 'Generate report'}
-          </ButtonPrimary>
+          </ButtonPrimary> */}
         </div>
       </header>
 
@@ -476,18 +554,20 @@ export function ReportsPage() {
               </p>
               <div className="flex gap-2">
                 <ButtonSecondary
-                  className="px-3 py-1.5 text-[12px]"
+                  className="px-2.5 py-1.5 text-[12px]"
                   onClick={() => setQueuePage((p) => Math.max(1, p - 1))}
                   disabled={currentQueuePage === 1}
+                  aria-label="Previous page"
                 >
-                  Previous
+                  <ChevronLeft className="h-3.5 w-3.5" />
                 </ButtonSecondary>
                 <ButtonSecondary
-                  className="px-3 py-1.5 text-[12px]"
+                  className="px-2.5 py-1.5 text-[12px]"
                   onClick={() => setQueuePage((p) => Math.min(queueTotalPages, p + 1))}
                   disabled={currentQueuePage === queueTotalPages}
+                  aria-label="Next page"
                 >
-                  Next
+                  <ChevronRight className="h-3.5 w-3.5" />
                 </ButtonSecondary>
               </div>
             </div>
@@ -543,7 +623,52 @@ export function ReportsPage() {
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-[16px] font-semibold tracking-tight text-[#111]">Recent decks</h3>
-          <span className="text-[12px] text-[#6e6e73]">{reports.length} total</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-[#6e6e73]">{reports.length} total</span>
+            <span className="text-[12px] text-[#6e6e73]">{selectedReportIds.size} selected</span>
+            <motion.div
+              initial={{ opacity: 0, y: -3 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="inline-flex items-center gap-1 rounded-full border border-black/[0.06] bg-white/70 px-1.5 py-1 shadow-[0_5px_16px_-12px_rgb(0,0,0,0.25)] backdrop-blur-lg"
+            >
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                type="button"
+                onClick={selectAllReports}
+                className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#111]"
+              >
+                <CheckCheck className="h-3.5 w-3.5" />
+                Select all
+              </motion.button>
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                type="button"
+                onClick={deselectAllReports}
+                disabled={!selectedReportIds.size}
+                className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#111] disabled:opacity-40"
+              >
+                <CircleOff className="h-3.5 w-3.5" />
+                Deselect
+              </motion.button>
+              <motion.button
+                whileTap={{ scale: 0.94 }}
+                type="button"
+                disabled={!selectedReportIds.size}
+                onClick={() =>
+                  setConfirmState({
+                    reportIds: Array.from(selectedReportIds),
+                    title: `Delete ${selectedReportIds.size} selected deck(s)?`,
+                    body: 'This removes deck metadata and generated files for all selected decks. This action cannot be undone.',
+                    busy: false,
+                  })
+                }
+                className="rounded-full p-1.5 text-[#6e6e73] transition hover:bg-black/[0.05] hover:text-[#111] disabled:opacity-40"
+                aria-label="Delete selected decks"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </motion.button>
+            </motion.div>
+          </div>
         </div>
         {loading ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -556,10 +681,28 @@ export function ReportsPage() {
             {reports.map((r) => (
               <motion.article
                 key={r.id}
+                ref={(node) => {
+                  if (node) reportCardRefs.current.set(r.id, node)
+                  else reportCardRefs.current.delete(r.id)
+                }}
                 layout
                 whileHover={{ y: -2 }}
-                className="relative rounded-3xl bg-white/75 p-4 ring-1 ring-black/[0.05] transition-shadow hover:shadow-[0_14px_40px_-28px_rgb(0,0,0,0.32)]"
+                className={[
+                  'relative rounded-3xl bg-white/75 p-4 ring-1 transition-shadow hover:shadow-[0_14px_40px_-28px_rgb(0,0,0,0.32)]',
+                  highlightedReportId === r.id
+                    ? 'ring-[#0071e3]/45 shadow-[0_18px_44px_-26px_rgb(0,113,227,0.45)]'
+                    : 'ring-black/[0.05]',
+                ].join(' ')}
               >
+                <label className="absolute left-3 top-3 z-10 inline-flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={selectedReportIds.has(r.id)}
+                    onChange={() => toggleReportSelect(r.id)}
+                    className="h-4 w-4 rounded border-slate-300 text-[#0071e3]"
+                    aria-label={`Select deck ${r.id}`}
+                  />
+                </label>
                 <button
                   type="button"
                   onClick={() => setMenuOpen(menuOpen === r.id ? null : r.id)}
@@ -623,8 +766,8 @@ export function ReportsPage() {
                     }}
                     className="inline-flex items-center gap-1 rounded-xl border border-black/[0.09] bg-white px-3 py-1.5 text-[12px] text-[#111]"
                   >
-                    <Eye className="h-3.5 w-3.5" />
-                    Open
+                    <Pencil className="h-3.5 w-3.5" />
+                    Edit
                   </button>
                 </div>
               </motion.article>
@@ -690,6 +833,8 @@ export function ReportsPage() {
             ? deleteObservationFlow()
             : confirmState?.obsIds
               ? bulkDeleteObservationsFlow()
+              : confirmState?.reportIds
+                ? bulkDeleteReportsFlow()
               : deleteReportFlow())
         }
       />

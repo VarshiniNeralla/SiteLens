@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ImageUp, LoaderCircle, Presentation, Plus, ChevronDown, ChevronUp, Save, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { createObservation, generateReport, uploadImage } from '../api.js'
 import { FormSelect } from '../components/FormSelect.jsx'
 import { ButtonPrimary, ButtonSecondary } from '../components/ui/Button.jsx'
@@ -18,6 +19,7 @@ import {
 
 const REQUIRED_KEYS = ['project_name', 'tower', 'floor', 'flat', 'room', 'observation_type', 'severity']
 const TOAST_TIMEOUT_MS = 2000
+const REPORT_READY_TOAST_TIMEOUT_MS = 7000
 
 const emptyForm = () => ({
   project_name: '',
@@ -73,6 +75,7 @@ function toStaticImageSrc(imagePath) {
 }
 
 export function WorkspacePage() {
+  const navigate = useNavigate()
   const inputRef = useRef(null)
   const detailsPanelRef = useRef(null)
   const pendingUploadForId = useRef(1)
@@ -85,6 +88,7 @@ export function WorkspacePage() {
   const [fieldErrors, setFieldErrors] = useState({})
   const [reportBusy, setReportBusy] = useState(false)
   const [reportNotice, setReportNotice] = useState('')
+  const [reportReadyToast, setReportReadyToast] = useState(null)
   const [showDraftReveal, setShowDraftReveal] = useState(false)
   const [imageLoadState, setImageLoadState] = useState({})
 
@@ -132,6 +136,12 @@ export function WorkspacePage() {
     const id = setTimeout(() => setReportNotice(''), TOAST_TIMEOUT_MS)
     return () => clearTimeout(id)
   }, [reportNotice])
+
+  useEffect(() => {
+    if (!reportReadyToast) return undefined
+    const id = setTimeout(() => setReportReadyToast(null), REPORT_READY_TOAST_TIMEOUT_MS)
+    return () => clearTimeout(id)
+  }, [reportReadyToast])
 
   const patchById = (id, mutator) => {
     setItems((prev) => updateById(prev, id, mutator))
@@ -283,9 +293,13 @@ export function WorkspacePage() {
     setReportBusy(true)
     setGlobalError('')
     setReportNotice('')
+    setReportReadyToast(null)
     try {
       const report = await generateReport({ observation_ids: savedIds, title: null, include_pdf: false })
-      setReportNotice(`Report #${report.id} is ${report.status}. Open Reports to download.`)
+      setReportReadyToast({
+        id: report.id,
+        message: 'Report generated successfully.',
+      })
     } catch (e) {
       setGlobalError(e.message || 'Report generation failed.')
     } finally {
@@ -400,7 +414,7 @@ export function WorkspacePage() {
                 className={[
                   'relative h-16 w-24 shrink-0 overflow-hidden rounded-xl ring-1 transition-all duration-200',
                   item.id === activeId
-                    ? 'scale-[1.02] ring-[#0071e3]/45 shadow-[0_10px_18px_-14px_rgb(0,113,227,0.7)]'
+                    ? 'scale-[1.02] ring-black/[0.18]'
                     : 'ring-black/[0.08] hover:-translate-y-0.5 hover:ring-black/[0.18]',
                 ].join(' ')}
               >
@@ -554,6 +568,37 @@ export function WorkspacePage() {
           >
             {globalError}
           </motion.p>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {reportReadyToast ? (
+          <motion.div
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={{ duration: 0.2 }}
+            className="fixed bottom-6 left-1/2 z-50 w-[min(92vw,430px)] -translate-x-1/2 rounded-2xl border border-black/[0.08] bg-white/86 p-3 shadow-[0_18px_42px_-24px_rgb(0,0,0,0.45)] backdrop-blur-xl"
+          >
+            <p className="px-1 text-[13px] font-medium text-[#111]">{reportReadyToast.message}</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <ButtonPrimary
+                className="px-4 py-2 text-[12px]"
+                onClick={() => {
+                  navigate('/output/reports', { state: { highlightReportId: reportReadyToast.id } })
+                  setReportReadyToast(null)
+                }}
+              >
+                Go to Reports
+              </ButtonPrimary>
+              <button
+                type="button"
+                onClick={() => setReportReadyToast(null)}
+                className="rounded-xl px-3 py-2 text-[12px] font-medium text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#111]"
+              >
+                Dismiss
+              </button>
+            </div>
+          </motion.div>
         ) : null}
       </AnimatePresence>
       <AnimatePresence>
