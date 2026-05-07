@@ -11,7 +11,6 @@ venv/
 backend/uploads/
 backend/reports/
 backend/data/app_store.json
-
 # Frontend
 frontend/node_modules/
 frontend/dist/
@@ -20,3 +19,6 @@ frontend/dist/
 .env
 .DS_Store
 Thumbs.db
+
+how_to_run.txt
+

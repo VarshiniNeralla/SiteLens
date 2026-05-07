@@ -8,7 +8,7 @@ export function Shell() {
   return (
     <div className="min-h-screen selection:apple bg-[#f5f5f7] text-[#111] antialiased">
       <FloatingNav />
-      <main className="mx-auto max-w-6xl px-5 pb-32 pt-28 md:px-10 md:pt-36">
+      <main className="mx-auto max-w-[1400px] px-4 pb-10 pt-24 md:px-8 md:pt-32">
         <AnimatePresence mode="wait">
           <motion.div
             key={pathname}

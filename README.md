@@ -1,55 +1,145 @@
-# Quality Walkthrough Report Generation System
+# Quality Walkthrough Report Engine
 
-Production-oriented stack for capturing construction QA walkthrough data, drafting formal wording with your own vLLM deployment, rendering multi-slide editable PowerPoint deliverables (`python-pptx`), and optionally exporting companion PDFs through LibreOffice in headless mode.
+Deterministic construction QA capture and deck generation — from field photos to presentation-ready PowerPoint.
 
-## Architecture (intentionally small)
+Built for teams that need **structured walkthrough reporting**, not generic AI document generation.
 
-| Layer             | Responsibility |
-| ----------------- | ----------------------------------- |
-| React + Vite UI   | Uploads, intake form, previews, orchestration UX |
-| FastAPI modules   | Deterministic workflows; REST surface |
-| JSON file store | `backend/data/app_store.json` — observations & reports metadata (no database server) |
-| Filesystem       | Raw imagery under `backend/uploads/`; artefacts under `backend/reports/` |
-| LLM integration  | Stateless HTTP POSTs (`httpx`) — text only |
+---
 
-The LLM never decides storage, sequencing, formatting coordinates, or API branching. Prompting is scoped to QA language only.
+## Why This Exists
 
-Refer to **`backend/.env.example`** for tunables (`LLM_BASE_URL`, storage paths, `PPT_LAYOUT_PATH`, LibreOffice executable, compression knobs).
+Most QA walkthrough tooling breaks in one of two ways:
 
-Interactive API descriptions ship with FastAPI (`/docs`, `/redoc`, OpenAPI `/openapi.json`).
+- too manual (slow, inconsistent, hard to scale)
+- too autonomous (unreliable, uneditable, hard to trust)
 
-## Prerequisites
+This project sits in the middle:
 
-1. **Python 3.11+** recommended.
-2. **Node.js 20+** for the Vite client.
-3. **LibreOffice** with the `soffice`/`soffice.exe` binary reachable for PDF exports (configure `LIBREOFFICE_SOFFICE` on Windows/macOS/Linux as needed).
-4. **Reachable vLLM OpenAI-compatible endpoint** (`/v1/chat/completions`). Set `LLM_MODEL` to the served model slug.
+- **human-controlled inputs**
+- **strict metadata model**
+- **LLM constrained to wording only**
+- **deterministic slide rendering**
 
-Sample endpoint from spec: `http://172.20.7.22:8000/v1/chat/completions` ⇒ use `LLM_BASE_URL=http://172.20.7.22:8000/v1`.
+You get speed without giving up control.
 
-## Backend setup
+---
+
+## What You Get
+
+- Premium single-workspace web UX for image + metadata capture
+- Controlled vocabulary observation intake (no freeform chaos)
+- AI-assisted observation/recommendation wording (optional)
+- Deterministic PowerPoint rendering with engineering-grade layout consistency
+- Optional PDF companion export (if LibreOffice is available)
+- Lightweight local persistence (JSON + filesystem), no database required
+
+---
+
+## Core Workflow
+
+`Upload image`  
+→ `Capture structured metadata`  
+→ `Generate wording (optional)`  
+→ `Build PPTX deck`  
+→ `Export PDF (optional)`
+
+Each stage is explicit. Nothing hidden. No autonomous pipeline steps.
+
+---
+
+## Stack Philosophy
+
+This codebase is intentionally small.
+
+No orchestration frameworks.  
+No vector database.  
+No RAG subsystem.  
+No agent loops.
+
+That is a deliberate engineering choice:
+
+- lower operational surface area
+- easier debugging
+- deterministic outputs
+- clearer ownership boundaries
+
+---
+
+## Architecture
+
+### Frontend
+
+React + Vite + Tailwind + Framer Motion  
+Single workspace UX for upload, observation capture, and report actions.
+
+### Backend
+
+FastAPI  
+Typed request/response schemas and deterministic rendering services.
+
+### Persistence
+
+- `backend/data/app_store.json` for observations/reports metadata
+- `backend/uploads/` for source images
+- `backend/reports/` for generated decks and PDFs
+
+### Rendering Engine
+
+- `python-pptx` for editable PPTX output
+- Optional LibreOffice conversion for PDF output
+
+### LLM Integration
+
+OpenAI-compatible vLLM endpoint (`/v1/chat/completions`) used only for text drafting.
+
+---
+
+## Project Structure
+
+```text
+backend/
+  app/
+    api/routes/          # upload, observations, reports
+    services/            # ppt, pdf, llm, observation/report orchestration
+    schemas/             # typed API contracts
+    store.py             # JSON datastore
+  data/
+    app_store.json       # persisted records
+    ppt_layout.json      # layout tuning values
+  uploads/               # source images
+  reports/               # generated artifacts
+
+frontend/
+  src/
+    pages/               # workspace + reports UX
+    components/          # UI primitives and layout shell
+    api.js               # API client
+    constants/           # controlled form options
+```
+
+---
+
+## Local Setup
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 20+
+- A reachable OpenAI-compatible LLM endpoint (vLLM recommended)
+- LibreOffice **only if** PDF export is required
+
+### 1) Backend
 
 ```powershell
 cd "c:\ReportGen Agent\backend"
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env   # customize LLM / LibreOffice paths / DATA_DIR if needed
-```
-
-Run the API (default avoids clashing with a vLLM service on `:8000`):
-
-```powershell
-cd "c:\ReportGen Agent\backend"
-.\.venv\Scripts\activate
+copy .env.example .env
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
-On boot the API initializes the JSON datastore (creates **`data/app_store.json`** once you save your first observation or report), ensures `uploads/`, `reports/`, `data/`, and reads `ppt_layout.json` for slide geometry.
-
-To reset all records, stop the API and delete **`backend/data/app_store.json`**.
-
-## Frontend setup
+### 2) Frontend
 
 ```powershell
 cd "c:\ReportGen Agent\frontend"
@@ -57,49 +147,142 @@ npm install
 npm run dev
 ```
 
-Vite proxies `/api/*`, `/healthz`, `/docs`, `/static/*` → `127.0.0.1:8080`. REST paths use the **`/api`** prefix so the SPA can own clean routes like **`/upload`** and **`/reports`** (full page GET delivers `index.html`, not JSON).
+Vite serves the app on `http://localhost:5173` and proxies `/api/*` to `http://127.0.0.1:8080`.
 
-For standalone hosting, build and set `VITE_API_BASE` to your API origin, including **`/api`** when the backend is mounted that way (e.g. `https://api.example.com/api`).
+---
 
-## REST endpoints (quick reference)
+## Environment Variables
 
-| Method | Path | Notes |
-| ------ | ---- | ----- |
-| `POST` | `/api/upload` | Multipart (`file`). Validates & compresses imagery. Returns relative POSIX path usable as `image_path`. |
-| `POST` | `/api/observations` | Creates structured observation (+ optional synchronous LLM generation). |
-| `GET`  | `/api/observations` | Filters with `project_id` query optional. |
-| `GET`  | `/api/observations/{id}` | Detail view. |
-| `PUT`  | `/api/observations/{id}` | Partial update; supports `regenerate_text`. |
-| `POST` | `/api/reports/generate` | Body: `{ observation_ids: number[], title?: string, include_pdf: boolean }` — observations must share the same project **name**. |
-| `GET`  | `/api/reports` | Summary list incl. booleans `has_pptx`/`has_pdf`. |
-| `GET`  | `/api/reports/{id}` | Metadata plus `observation_ids` in deck generation order. |
-| `GET`  | `/api/reports/{id}/download?format=pptx\|pdf` | Streams artefact binaries. |
+Key configuration lives in `backend/.env`:
 
-## PowerPoint customization
+- `LLM_BASE_URL` — root OpenAI-compatible endpoint (e.g. `http://host:8000/v1`)
+- `LLM_CHAT_URL` — optional full chat URL override
+- `LLM_MODEL` — served model id
+- `LLM_TIMEOUT_SECONDS` — timeout for generation calls
 
-`tuning` geometry lives in **`backend/data/ppt_layout.json`**. Boxes are measured in inches; adjust without touching Python.
+- `UPLOAD_DIR` — image storage directory
+- `REPORTS_DIR` — generated artifact directory
+- `DATA_DIR` — JSON datastore directory
 
-Optional `PPT_TEMPLATE_PATH` loads an existing `.pptx` deck as the backing presentation so theme fonts propagate; programmatic slides appended after imported masters still honor the measured boxes.
+- `PPT_LAYOUT_PATH` — PPT geometry configuration file
+- `PPT_TEMPLATE_PATH` — optional `.pptx` base template
 
-Rendered `.pptx` files remain editable in Microsoft PowerPoint or LibreOffice Impress — nothing is flattened to images except the embedded photo thumbnails.
+- `LIBREOFFICE_SOFFICE` — LibreOffice executable path (optional unless PDF needed)
 
-## PDF export pitfalls
+- `CORS_ORIGINS` — allowed web origins
 
-Failures are logged and surfaced on the report record (`error_message`) while keeping a successful PPTX when possible. Confirm:
+Frontend:
 
-* `soffice` is on `PATH` or `LIBREOFFICE_SOFFICE` points to the real binary.
-* The service account can write to `reports/`.
-* Antivirus / enterprise policy allows headless conversion.
+- `VITE_API_BASE` — optional API base URL (include `/api` if backend is mounted there)
 
-## Engineering notes
+---
 
-* No PostgreSQL/SQLAlchemy in this codebase path — persisted state is **`data/app_store.json`** plus files on disk.
-* No LangChain / CrewAI / AutoGen / vector DB / RAG / microservices.
-* Observation ordering in generated decks respects the IDs list passed to `/api/reports/generate` (duplicate ids are collapsed while preserving order).
+## API Overview
 
-## License / compliance
+### Upload
+
+- `POST /api/upload`  
+  Upload and validate image. Returns relative `image_path`.
+
+### Observations
+
+- `POST /api/observations`  
+  Create observation from controlled metadata + image path.
+- `GET /api/observations`  
+  List observations.
+- `GET /api/observations/{id}`  
+  Fetch one observation.
+- `PUT /api/observations/{id}`  
+  Update observation fields and optionally regenerate wording.
+
+### Reports
+
+- `POST /api/reports/generate`  
+  Build deck from observation ids (same project required).
+- `GET /api/reports`  
+  List report summaries.
+- `GET /api/reports/{id}`  
+  Report metadata.
+- `GET /api/reports/{id}/download?format=pptx|pdf`  
+  Download generated artifacts.
+
+---
+
+## PowerPoint Rendering Engine
+
+The rendering system is deterministic by design:
+
+- fixed widescreen canvas
+- reusable geometry constants
+- strict observation grouping and pagination
+- consistent image/table alignment
+
+Current layout model:
+
+- **3 observations per slide**
+- image-first blocks
+- compact metadata tables
+- consultant-style density and hierarchy
+
+Outputs are editable `.pptx` files suitable for Microsoft PowerPoint workflows.
+
+---
+
+## Design Principles
+
+- **Deterministic rendering over autonomous agents**  
+  Layout and sequencing are explicit and testable.
+- **Structured metadata over freeform prompts**  
+  Input quality drives output consistency.
+- **Editable deliverables over flattened exports**  
+  Teams can refine decks after generation.
+- **Workflow clarity over AI hype**  
+  AI assists language, not control flow.
+
+---
+
+## Screenshots / Preview
+
+> Add project visuals here:
+
+- Workspace (capture UX)
+- Image upload + thumbnail rail
+- Metadata + AI draft panel
+- Generated PowerPoint slides
+
+```md
+![Workspace](./docs/screenshots/workspace.png)
+![Observation Capture](./docs/screenshots/observation.png)
+![Reports Library](./docs/screenshots/reports.png)
+![Generated Deck](./docs/screenshots/deck.png)
+```
+
+---
+
+## Future Extensions
+
+Planned directions (not current dependencies):
+
+- PostgreSQL persistence layer
+- multi-user auth + role separation
+- cloud blob storage for images/reports
+- template packs for multiple client formats
+- reporting analytics and trend dashboards
+- image-assisted defect classification
+
+---
+
+## Engineering Posture
+
+This is a production-oriented reporting engine with a deliberately constrained architecture:
+
+- predictable behavior
+- editable outputs
+- low operational overhead
+- clear extension points
+
+If you are building construction QA workflows that must be both fast and auditable, this is the intended baseline.
 
 Operational teams remain accountable for factual accuracy — always review AI-generated wording before contractual submission.
 
 
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
