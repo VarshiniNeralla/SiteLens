@@ -9,6 +9,10 @@ class ReportGenerateRequest(BaseModel):
     include_pdf: bool = True
 
 
+class ReportUpdateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=512)
+
+
 class ReportOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -37,3 +41,4 @@ class ReportSummaryOut(BaseModel):
     has_pptx: bool = False
     has_pdf: bool = False
     primary_project_name: str | None = None
+    observation_count: int = 0

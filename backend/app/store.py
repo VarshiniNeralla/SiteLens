@@ -208,6 +208,13 @@ class AppStore:
             self._observations[obs.id] = obs
             self._persist_unlocked()
 
+    def delete_observation(self, oid: int) -> ObservationRecord | None:
+        with self._lock:
+            obs = self._observations.pop(oid, None)
+            if obs is not None:
+                self._persist_unlocked()
+            return obs
+
     def allocate_report_id(self) -> int:
         with self._lock:
             self._report_seq += 1
@@ -229,6 +236,13 @@ class AppStore:
             rows = list(self._reports.values())
         rows.sort(key=lambda r: r.id, reverse=True)
         return rows
+
+    def delete_report(self, rid: int) -> ReportRecord | None:
+        with self._lock:
+            row = self._reports.pop(rid, None)
+            if row is not None:
+                self._persist_unlocked()
+            return row
 
 
 def get_store() -> AppStore:

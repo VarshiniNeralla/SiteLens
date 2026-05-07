@@ -30,9 +30,38 @@ body {
   letter-spacing: -0.015em;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(17 17 17 / 0.22) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgb(17 17 17 / 0.2);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(17 17 17 / 0.3);
+}
+
 .selection\:apple::-moz-selection {
   background: rgb(17 24 39 / 0.08);
 }
 .selection\:apple::selection {
   background: rgb(17 24 39 / 0.08);
+}
+
+@keyframes softShimmer {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -20% 0;
+  }
 }

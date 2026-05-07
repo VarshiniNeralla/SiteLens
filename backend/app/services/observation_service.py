@@ -130,3 +130,21 @@ def update_observation(
 
     store.replace_observation(obs)
     return observation_to_out(obs)
+
+
+def delete_observation(store: AppStore, obs_id: int, *, force: bool = False) -> bool:
+    impacted = [r for r in store.list_reports_desc() if obs_id in r.observation_ids]
+    if impacted and not force:
+        report_ids = ", ".join(str(r.id) for r in impacted[:6])
+        suffix = "..." if len(impacted) > 6 else ""
+        raise ValueError(
+            f"Observation #{obs_id} is already used in report(s) #{report_ids}{suffix}. "
+            "Delete anyway with force=true."
+        )
+    if impacted and force:
+        for r in impacted:
+            store.upsert_report(
+                replace(r, observation_ids=[oid for oid in r.observation_ids if oid != obs_id])
+            )
+    deleted = store.delete_observation(obs_id)
+    return deleted is not None

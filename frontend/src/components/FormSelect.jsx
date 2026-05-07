@@ -23,8 +23,8 @@ export function FormSelect({
           onChange={(e) => onChange(e.target.value)}
           aria-invalid={error ? true : undefined}
           className={[
-            'w-full appearance-none rounded-2xl border bg-white/80 px-4 py-3 pr-10 text-[15px] font-normal text-[#111]',
-            'shadow-[0_1px_0_rgb(0,0,0,0.02)] outline-none transition-[box-shadow,background-color,border-color] duration-200',
+            'w-full appearance-none rounded-2xl border bg-[#f7f7f9] px-4 py-3 pr-10 text-[14px] font-normal text-[#111]',
+            'shadow-[inset_0_1px_1px_rgb(255,255,255,0.75),0_1px_0_rgb(0,0,0,0.02)] outline-none transition-[box-shadow,background-color,border-color] duration-200',
             'focus:bg-white focus:ring-2 focus:ring-[#0071e3]/22',
             error
               ? 'border-red-300/90 focus:border-red-400/80 focus:ring-red-200/80'

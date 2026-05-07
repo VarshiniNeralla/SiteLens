@@ -52,6 +52,18 @@ export function listObservations() {
   return apiFetch('/observations')
 }
 
+export function updateObservation(id, payload) {
+  return apiFetch(`/observations/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteObservation(id, options = {}) {
+  const q = options.force ? '?force=true' : ''
+  return apiFetch(`/observations/${id}${q}`, { method: 'DELETE' })
+}
+
 export function generateReport(body) {
   return apiFetch('/reports/generate', {
     method: 'POST',
@@ -61,6 +73,21 @@ export function generateReport(body) {
 
 export function listReports() {
   return apiFetch('/reports')
+}
+
+export function getReport(reportId) {
+  return apiFetch(`/reports/${reportId}`)
+}
+
+export function renameReport(reportId, title) {
+  return apiFetch(`/reports/${reportId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function deleteReport(reportId) {
+  return apiFetch(`/reports/${reportId}`, { method: 'DELETE' })
 }
 
 export function downloadUrl(reportId, format) {

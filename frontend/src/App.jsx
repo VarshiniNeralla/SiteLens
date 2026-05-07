@@ -8,10 +8,15 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route element={<Shell />}>
-          <Route path="/" element={<WorkspacePage />} />
-          <Route path="/upload" element={<WorkspacePage />} />
-          <Route path="/observations/new" element={<WorkspacePage />} />
-          <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/" element={<Navigate to="/workspace" replace />} />
+          <Route path="/workspace" element={<WorkspacePage />} />
+          <Route path="/capture/upload" element={<WorkspacePage />} />
+          <Route path="/capture/observations" element={<WorkspacePage />} />
+          <Route path="/output/reports" element={<ReportsPage />} />
+          {/* Backward compatibility redirects */}
+          <Route path="/upload" element={<Navigate to="/capture/upload" replace />} />
+          <Route path="/observations/new" element={<Navigate to="/capture/observations" replace />} />
+          <Route path="/reports" element={<Navigate to="/output/reports" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

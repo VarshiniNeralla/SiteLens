@@ -74,3 +74,18 @@ def update_observation(
     if out is None:
         raise HTTPException(status_code=404, detail="Observation not found")
     return out
+
+
+@router.delete("/{obs_id}", status_code=204)
+def delete_observation(
+    obs_id: int,
+    force: bool = Query(default=False),
+    store: AppStore = Depends(get_store_dep),
+) -> None:
+    try:
+        deleted = observation_service.delete_observation(store, obs_id, force=force)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Observation not found")
+    return None

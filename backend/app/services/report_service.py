@@ -1,4 +1,4 @@
-import uuid
+import re
 from pathlib import Path
 
 from app.config import settings
@@ -9,6 +9,7 @@ from app.services import llm_service, pdf_service, ppt_service
 from app.store import AppStore, utcnow
 
 logger = get_logger(__name__)
+_WINDOWS_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 
 
 def generate_report_sync(
@@ -19,8 +20,6 @@ def generate_report_sync(
     include_pdf: bool,
 ) -> ReportOut:
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
-    uniq = uuid.uuid4().hex[:12]
-
     unique_ids = list(dict.fromkeys(observation_ids))
     by_id: dict[int, ObservationRecord] = {}
     unknown: list[int] = []
@@ -58,8 +57,8 @@ def generate_report_sync(
     pid = ordered[0].project_id
 
     rid = store.allocate_report_id()
-    pptx_name = f"report_{rid}_{uniq}.pptx"
-    ppt_path = Path(settings.reports_dir) / pptx_name
+    export_base = _sanitize_export_basename(report_title)
+    ppt_path = _next_available_export_path(Path(settings.reports_dir), export_base, ".pptx")
 
     oid_list = [o.id for o in ordered]
 
@@ -153,3 +152,24 @@ def list_reports(store: AppStore) -> list[ReportRecord]:
 
 def get_report(store: AppStore, report_id: int) -> ReportRecord | None:
     return store.get_report(report_id)
+
+
+def _sanitize_export_basename(name: str) -> str:
+    clean = _WINDOWS_FORBIDDEN.sub(" ", str(name or "").strip())
+    clean = re.sub(r"\s+", " ", clean).strip().rstrip(". ")
+    if not clean:
+        clean = "Quality walkthrough"
+    return clean[:120]
+
+
+def _next_available_export_path(base_dir: Path, basename: str, suffix: str) -> Path:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    candidate = base_dir / f"{basename}{suffix}"
+    if not candidate.exists():
+        return candidate
+    version = 2
+    while True:
+        candidate = base_dir / f"{basename} ({version}){suffix}"
+        if not candidate.exists():
+            return candidate
+        version += 1
