@@ -42,6 +42,22 @@ def _build_download_basename(store: AppStore, row: ReportRecord) -> str:
     return _sanitize_download_basename(title)
 
 
+def _build_download_basename_for_format(store: AppStore, row: ReportRecord, fmt: str) -> str:
+    fmt_norm = fmt.lower().strip()
+    if fmt_norm == "xlsx":
+        proj = _primary_project_name(store, row) or "Mixed Observations"
+        title = f"Quality walkthrough data — {proj}"
+        same_title_count = sum(
+            1
+            for r in list_reports(store)
+            if (_primary_project_name(store, r) or "Mixed Observations").casefold() == proj.casefold()
+        )
+        if same_title_count > 1:
+            title = f"{title} — {row.created_at.date().isoformat()}"
+        return _sanitize_download_basename(title)
+    return _build_download_basename(store, row)
+
+
 @router.post("/generate", response_model=ReportOut)
 def generate_report(
     payload: ReportGenerateRequest,
@@ -70,6 +86,7 @@ def api_list_reports(store: AppStore = Depends(get_store_dep)) -> list[ReportSum
             created_at=r.created_at,
             has_pptx=r.pptx_path is not None and Path(r.pptx_path).is_file(),
             has_pdf=r.pdf_path is not None and Path(r.pdf_path).is_file(),
+            has_xlsx=r.xlsx_path is not None and Path(r.xlsx_path).is_file(),
             primary_project_name=_primary_project_name(store, r),
             observation_count=len(r.observation_ids),
         )
@@ -85,6 +102,7 @@ def _detail_report(report: ReportRecord) -> ReportOut:
         status=report.status,
         pptx_path=report.pptx_path,
         pdf_path=report.pdf_path,
+        xlsx_path=report.xlsx_path,
         summary=report.summary,
         error_message=report.error_message,
         created_at=report.created_at,
@@ -103,7 +121,7 @@ def get_report_by_id(report_id: int, store: AppStore = Depends(get_store_dep)) -
 @router.get("/{report_id}/download")
 def download_report(
     report_id: int,
-    file_format: str = Query("pptx", alias="format", description="pptx | pdf"),
+    file_format: str = Query("pptx", alias="format", description="pptx | pdf | xlsx"),
     store: AppStore = Depends(get_store_dep),
 ) -> FileResponse:
     fmt = file_format.lower().strip()
@@ -117,7 +135,7 @@ def download_report(
         p = Path(row.pptx_path)
         if not p.is_file():
             raise HTTPException(status_code=404, detail="Presentation file missing")
-        download_name = f"{_build_download_basename(store, row)}.pptx"
+        download_name = f"{_build_download_basename_for_format(store, row, 'pptx')}.pptx"
         return FileResponse(
             path=str(p),
             filename=download_name,
@@ -129,8 +147,20 @@ def download_report(
         p = Path(row.pdf_path)
         if not p.is_file():
             raise HTTPException(status_code=404, detail="PDF file missing")
-        download_name = f"{_build_download_basename(store, row)}.pdf"
+        download_name = f"{_build_download_basename_for_format(store, row, 'pdf')}.pdf"
         return FileResponse(path=str(p), filename=download_name, media_type="application/pdf")
+    if fmt == "xlsx":
+        if not row.xlsx_path:
+            raise HTTPException(status_code=404, detail="Excel not generated")
+        p = Path(row.xlsx_path)
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail="Excel file missing")
+        download_name = f"{_build_download_basename_for_format(store, row, 'xlsx')}.xlsx"
+        return FileResponse(
+            path=str(p),
+            filename=download_name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     raise HTTPException(status_code=400, detail="Unsupported format")
 
@@ -151,6 +181,7 @@ def rename_report(
         status=row.status,
         pptx_path=row.pptx_path,
         pdf_path=row.pdf_path,
+        xlsx_path=row.xlsx_path,
         summary=row.summary,
         error_message=row.error_message,
         created_at=row.created_at,
@@ -166,7 +197,7 @@ def delete_report(report_id: int, store: AppStore = Depends(get_store_dep)) -> N
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
     # Keep filesystem tidy, but failure to remove files should not block metadata delete.
-    for p in [row.pptx_path, row.pdf_path]:
+    for p in [row.pptx_path, row.pdf_path, row.xlsx_path]:
         if not p:
             continue
         try:

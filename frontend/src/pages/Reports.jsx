@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useLocation } from 'react-router-dom'
 import {
+  ArrowUpDown,
   Calendar,
   CheckCheck,
   ChevronLeft,
@@ -91,6 +92,8 @@ export function ReportsPage() {
   const [queuePage, setQueuePage] = useState(1)
   const [highlightedReportId, setHighlightedReportId] = useState(null)
   const [selectedReportIds, setSelectedReportIds] = useState(() => new Set())
+  const [queueProjectFilter, setQueueProjectFilter] = useState('all')
+  const [queueSortAsc, setQueueSortAsc] = useState(true)
 
   const load = async () => {
     setLoading(true)
@@ -147,12 +150,28 @@ export function ReportsPage() {
   }, [notice])
 
   const selectedRows = useMemo(() => observations.filter((o) => selected.has(o.id)), [observations, selected])
-  const queueTotalPages = Math.max(1, Math.ceil(observations.length / QUEUE_PAGE_SIZE))
+  const queueProjects = useMemo(
+    () => Array.from(new Set(observations.map((o) => o.project_name).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [observations],
+  )
+  const queueRows = useMemo(() => {
+    const base = queueProjectFilter === 'all'
+      ? observations
+      : observations.filter((o) => o.project_name === queueProjectFilter)
+    const rows = [...base]
+    rows.sort((a, b) => {
+      const cmp = (a.project_name || '').localeCompare(b.project_name || '')
+      if (cmp !== 0) return queueSortAsc ? cmp : -cmp
+      return b.id - a.id
+    })
+    return rows
+  }, [observations, queueProjectFilter, queueSortAsc])
+  const queueTotalPages = Math.max(1, Math.ceil(queueRows.length / QUEUE_PAGE_SIZE))
   const currentQueuePage = Math.min(queuePage, queueTotalPages)
   const pagedObservations = useMemo(() => {
     const start = (currentQueuePage - 1) * QUEUE_PAGE_SIZE
-    return observations.slice(start, start + QUEUE_PAGE_SIZE)
-  }, [observations, currentQueuePage])
+    return queueRows.slice(start, start + QUEUE_PAGE_SIZE)
+  }, [queueRows, currentQueuePage])
   const sameProject = useMemo(
     () => selectedRows.length > 0 && new Set(selectedRows.map((o) => o.project_name)).size === 1,
     [selectedRows],
@@ -466,6 +485,47 @@ export function ReportsPage() {
               </motion.div>
             </div>
           </div>
+          <div className="mb-3 flex flex-wrap items-center gap-2 px-1">
+            <div className="inline-flex items-center gap-1 rounded-full border border-black/[0.06] bg-white/72 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setQueueProjectFilter('all')
+                  setQueuePage(1)
+                }}
+                className={[
+                  'rounded-full px-2.5 py-1 text-[11px] font-medium transition',
+                  queueProjectFilter === 'all' ? 'bg-black/[0.08] text-[#111]' : 'text-[#6e6e73] hover:text-[#111]',
+                ].join(' ')}
+              >
+                All
+              </button>
+              {queueProjects.map((project) => (
+                <button
+                  key={project}
+                  type="button"
+                  onClick={() => {
+                    setQueueProjectFilter(project)
+                    setQueuePage(1)
+                  }}
+                  className={[
+                    'rounded-full px-2.5 py-1 text-[11px] font-medium transition',
+                    queueProjectFilter === project ? 'bg-black/[0.08] text-[#111]' : 'text-[#6e6e73] hover:text-[#111]',
+                  ].join(' ')}
+                >
+                  {project}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setQueueSortAsc((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-full border border-black/[0.08] bg-white/75 px-3 py-1 text-[11px] font-medium text-[#6e6e73] transition hover:text-[#111]"
+            >
+              <ArrowUpDown className="h-3.5 w-3.5" />
+              Sort: Site name {queueSortAsc ? '↑' : '↓'}
+            </button>
+          </div>
           <div className="space-y-2 pr-1" style={{ minHeight: '360px' }}>
             {loading
               ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-[84px] rounded-2xl" />)
@@ -540,7 +600,7 @@ export function ReportsPage() {
                     </div>
                   </motion.article>
                 ))}
-            {!loading && !observations.length ? (
+            {!loading && !queueRows.length ? (
               <div className="rounded-2xl bg-[#f8f8fa] p-8 text-center">
                 <p className="text-[14px] font-medium text-[#111]">No observations yet</p>
                 <p className="mt-1 text-[13px] text-[#6e6e73]">Capture observations first, then build decks here.</p>
@@ -588,10 +648,10 @@ export function ReportsPage() {
                 placeholder="Optional"
               />
             </label>
-            <label className="flex items-center gap-2 rounded-xl bg-black/[0.03] p-3">
+            {/* <label className="flex items-center gap-2 rounded-xl bg-black/[0.03] p-3">
               <input type="checkbox" checked={includePdf} onChange={(e) => setIncludePdf(e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-[#0071e3]" />
               <span className="text-[13px] text-[#6e6e73]">Include PDF export</span>
-            </label>
+            </label> */}
 
             <div className="rounded-xl bg-[#f8f8fa] p-3 text-[13px] text-[#6e6e73]">
               <p>
@@ -751,6 +811,12 @@ export function ReportsPage() {
                     <a href={buildDownloadHref(r.id, 'pdf')} className="inline-flex items-center gap-1 rounded-xl border border-black/[0.09] bg-white px-3 py-1.5 text-[12px] text-[#111]">
                       <Download className="h-3.5 w-3.5" />
                       PDF
+                    </a>
+                  ) : null}
+                  {r.has_xlsx ? (
+                    <a href={buildDownloadHref(r.id, 'xlsx')} className="inline-flex items-center gap-1 rounded-xl border border-black/[0.09] bg-white px-3 py-1.5 text-[12px] text-[#111]">
+                      <Download className="h-3.5 w-3.5" />
+                      Excel
                     </a>
                   ) : null}
                   <button

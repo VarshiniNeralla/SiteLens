@@ -33,6 +33,7 @@ class ReportRecord:
     status: str
     pptx_path: str | None
     pdf_path: str | None
+    xlsx_path: str | None
     summary: str | None
     error_message: str | None
     created_at: datetime

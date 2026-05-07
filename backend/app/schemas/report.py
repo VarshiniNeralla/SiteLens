@@ -22,6 +22,7 @@ class ReportOut(BaseModel):
     status: str
     pptx_path: str | None
     pdf_path: str | None
+    xlsx_path: str | None
     summary: str | None
     error_message: str | None
     created_at: datetime
@@ -40,5 +41,6 @@ class ReportSummaryOut(BaseModel):
     created_at: datetime
     has_pptx: bool = False
     has_pdf: bool = False
+    has_xlsx: bool = False
     primary_project_name: str | None = None
     observation_count: int = 0

@@ -5,7 +5,7 @@ from app.config import settings
 from app.domain import ObservationRecord, ReportRecord
 from app.logging_config import get_logger
 from app.schemas.report import ReportOut
-from app.services import llm_service, pdf_service, ppt_service
+from app.services import excel_service, llm_service, pdf_service, ppt_service
 from app.store import AppStore, utcnow
 
 logger = get_logger(__name__)
@@ -52,13 +52,16 @@ def generate_report_sync(
     proj_name = project_names.pop()
 
     report_title = title or f"Quality walkthrough — {proj_name}"
+    data_title = f"Quality walkthrough data — {proj_name}" if proj_name else "Quality walkthrough data — Mixed Observations"
     summary_text = llm_service.generate_report_summary(proj_name, [o.generated_observation for o in ordered])
 
     pid = ordered[0].project_id
 
     rid = store.allocate_report_id()
     export_base = _sanitize_export_basename(report_title)
+    data_export_base = _sanitize_export_basename(data_title)
     ppt_path = _next_available_export_path(Path(settings.reports_dir), export_base, ".pptx")
+    xlsx_path = _next_available_export_path(Path(settings.reports_dir), data_export_base, ".xlsx")
 
     oid_list = [o.id for o in ordered]
 
@@ -69,6 +72,7 @@ def generate_report_sync(
         status="draft",
         pptx_path=None,
         pdf_path=None,
+        xlsx_path=None,
         summary=summary_text,
         error_message=None,
         created_at=utcnow(),
@@ -83,7 +87,9 @@ def generate_report_sync(
             observations=list(ordered),
             output_path=ppt_path,
         )
+        excel_service.build_quality_observation_xlsx(observations=list(ordered), output_path=xlsx_path)
         pptx_resolved = str(ppt_path.resolve())
+        xlsx_resolved = str(xlsx_path.resolve())
         pdf_resolved: str | None = None
         pdf_note: list[str] = []
 
@@ -106,6 +112,7 @@ def generate_report_sync(
             status="ready",
             pptx_path=pptx_resolved,
             pdf_path=pdf_resolved,
+            xlsx_path=xlsx_resolved,
             summary=report.summary,
             error_message="\n".join(pdf_note)[:1990] if pdf_note else None,
             created_at=report.created_at,
@@ -122,6 +129,7 @@ def generate_report_sync(
             status="failed",
             pptx_path=None,
             pdf_path=None,
+            xlsx_path=None,
             summary=report.summary,
             error_message=str(e)[:1990],
             created_at=report.created_at,
@@ -139,6 +147,7 @@ def _report_to_out(r: ReportRecord) -> ReportOut:
         status=r.status,
         pptx_path=r.pptx_path,
         pdf_path=r.pdf_path,
+        xlsx_path=r.xlsx_path,
         summary=r.summary,
         error_message=r.error_message,
         created_at=r.created_at,
