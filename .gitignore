@@ -1,0 +1,22 @@
+# Python / backend
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+backend/uploads/
+backend/reports/
+backend/data/app_store.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Env & OS
+.env
+.DS_Store
+Thumbs.db

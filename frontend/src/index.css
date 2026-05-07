@@ -1,0 +1,38 @@
+@import 'tailwindcss';
+
+@font-face {
+  font-family: 'SF Pro Text Fallback';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: local('SF Pro Text'), local('Segoe UI'), local(system-ui), local(sans-serif);
+}
+
+@theme inline {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+
+  --color-apple-bg: #f5f5f7;
+  --color-apple-ink: #111111;
+  --color-apple-muted: #6e6e73;
+  --color-apple-blue: #0071e3;
+  --color-apple-hairline: #e5e5e7;
+
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-apple-bg font-sans text-apple-ink antialiased;
+  letter-spacing: -0.015em;
+}
+
+.selection\:apple::-moz-selection {
+  background: rgb(17 24 39 / 0.08);
+}
+.selection\:apple::selection {
+  background: rgb(17 24 39 / 0.08);
+}

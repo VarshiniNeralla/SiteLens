@@ -1,0 +1,155 @@
+import uuid
+from pathlib import Path
+
+from app.config import settings
+from app.domain import ObservationRecord, ReportRecord
+from app.logging_config import get_logger
+from app.schemas.report import ReportOut
+from app.services import llm_service, pdf_service, ppt_service
+from app.store import AppStore, utcnow
+
+logger = get_logger(__name__)
+
+
+def generate_report_sync(
+    store: AppStore,
+    *,
+    observation_ids: list[int],
+    title: str | None,
+    include_pdf: bool,
+) -> ReportOut:
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    uniq = uuid.uuid4().hex[:12]
+
+    unique_ids = list(dict.fromkeys(observation_ids))
+    by_id: dict[int, ObservationRecord] = {}
+    unknown: list[int] = []
+    for oid in unique_ids:
+        o = store.get_observation(oid)
+        if o is None:
+            unknown.append(oid)
+        else:
+            by_id[oid] = o
+    if unknown:
+        raise ValueError(f"Unknown observation ids: {sorted(set(unknown))}")
+
+    ordered: list[ObservationRecord] = []
+    seen: set[int] = set()
+    for oid in observation_ids:
+        if oid in seen:
+            continue
+        ordered.append(by_id[oid])
+        seen.add(oid)
+
+    if not ordered:
+        raise ValueError("No observations supplied")
+
+    project_names = {o.project_name for o in ordered}
+    if len(project_names) != 1:
+        raise ValueError(
+            "All observations in one report must belong to the same project. "
+            f"Got distinct project names: {sorted(project_names)!r}"
+        )
+    proj_name = project_names.pop()
+
+    report_title = title or f"Quality walkthrough — {proj_name}"
+    summary_text = llm_service.generate_report_summary(proj_name, [o.generated_observation for o in ordered])
+
+    pid = ordered[0].project_id
+
+    rid = store.allocate_report_id()
+    pptx_name = f"report_{rid}_{uniq}.pptx"
+    ppt_path = Path(settings.reports_dir) / pptx_name
+
+    oid_list = [o.id for o in ordered]
+
+    report = ReportRecord(
+        id=rid,
+        project_id=pid,
+        title=report_title,
+        status="draft",
+        pptx_path=None,
+        pdf_path=None,
+        summary=summary_text,
+        error_message=None,
+        created_at=utcnow(),
+        observation_ids=oid_list,
+    )
+    store.upsert_report(report)
+
+    try:
+        ppt_service.build_quality_report_pptx(
+            project_name=proj_name,
+            title=report_title,
+            observations=list(ordered),
+            output_path=ppt_path,
+        )
+        pptx_resolved = str(ppt_path.resolve())
+        pdf_resolved: str | None = None
+        pdf_note: list[str] = []
+
+        if include_pdf:
+            try:
+                pdf_path_obj = pdf_service.pptx_to_pdf(ppt_path, Path(settings.reports_dir))
+                pdf_resolved = str(pdf_path_obj.resolve())
+            except FileNotFoundError as pdf_exc:
+                # Microsoft-only environments commonly skip LibreOffice; keep report ready with PPTX.
+                logger.warning("PDF export skipped: %s", pdf_exc)
+                pdf_note.append(f"PDF export skipped: {pdf_exc}")
+            except Exception as pdf_exc:  # noqa: BLE001
+                logger.exception("PDF export failed (PPTX retained): %s", pdf_exc)
+                pdf_note.append(f"PDF export failed: {pdf_exc}")
+
+        updated = ReportRecord(
+            id=report.id,
+            project_id=report.project_id,
+            title=report.title,
+            status="ready",
+            pptx_path=pptx_resolved,
+            pdf_path=pdf_resolved,
+            summary=report.summary,
+            error_message="\n".join(pdf_note)[:1990] if pdf_note else None,
+            created_at=report.created_at,
+            observation_ids=oid_list,
+        )
+        store.upsert_report(updated)
+        return _report_to_out(updated)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Report generation failed: %s", e)
+        failed = ReportRecord(
+            id=report.id,
+            project_id=report.project_id,
+            title=report.title,
+            status="failed",
+            pptx_path=None,
+            pdf_path=None,
+            summary=report.summary,
+            error_message=str(e)[:1990],
+            created_at=report.created_at,
+            observation_ids=oid_list,
+        )
+        store.upsert_report(failed)
+        return _report_to_out(failed)
+
+
+def _report_to_out(r: ReportRecord) -> ReportOut:
+    return ReportOut(
+        id=r.id,
+        project_id=r.project_id,
+        title=r.title,
+        status=r.status,
+        pptx_path=r.pptx_path,
+        pdf_path=r.pdf_path,
+        summary=r.summary,
+        error_message=r.error_message,
+        created_at=r.created_at,
+        observation_ids=r.observation_ids[:],
+    )
+
+
+def list_reports(store: AppStore) -> list[ReportRecord]:
+    return store.list_reports_desc()
+
+
+def get_report(store: AppStore, report_id: int) -> ReportRecord | None:
+    return store.get_report(report_id)
