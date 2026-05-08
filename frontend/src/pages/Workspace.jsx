@@ -316,7 +316,7 @@ export function WorkspacePage() {
     Boolean(activeImageState && activeImageState.src === activePreviewSrc && activeImageState.broken)
 
   return (
-    <div className="mx-auto h-[calc(100vh-10.2rem)] max-h-[860px] min-h-[620px] max-w-[1320px]">
+    <div className="mx-auto h-[calc(100vh-10.6rem)] max-h-[820px] min-h-[600px] max-w-[1320px]">
       <input
         ref={inputRef}
         type="file"
@@ -331,7 +331,7 @@ export function WorkspacePage() {
         }}
       />
 
-      <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[1.45fr_1fr]">
+      <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[1.55fr_0.9fr]">
         <section className="flex min-h-0 flex-col rounded-[26px] bg-white/66 p-4 ring-1 ring-black/[0.05] backdrop-blur-sm">
           <div className="mb-3 flex items-center justify-between px-1">
             <p className="text-[13px] font-medium text-[#6e6e73]">Image workspace</p>
@@ -451,22 +451,22 @@ export function WorkspacePage() {
           </div>
         </section>
 
-        <section ref={detailsPanelRef} className="relative flex min-h-0 flex-col rounded-[26px] bg-white/72 p-4 ring-1 ring-black/[0.05] backdrop-blur-sm">
-          <div className="mb-2 px-1">
+        <section ref={detailsPanelRef} className="relative flex min-h-0 flex-col rounded-[26px] bg-white/72 p-3 ring-1 ring-black/[0.05] backdrop-blur-sm">
+          <div className="mb-1.5 px-1">
             <h2 className="text-[18px] font-semibold tracking-tight text-[#111]">Observation Details</h2>
-            <p className="mt-1 text-[12px] text-[#6e6e73]">Core fields first. Advanced fields only when needed.</p>
+            <p className="mt-0.5 text-[12px] text-[#6e6e73]">Core fields first. Advanced fields only when needed.</p>
             {allCompleted ? <p className="mt-1 text-[12px] font-medium text-emerald-600">All observations completed.</p> : null}
           </div>
 
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pb-24 pr-1">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-[5.25rem] pr-1">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <FormSelect id="project_name" label="Project" value={active?.form.project_name ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, project_name: v }, dirty: true }))} options={PROJECT_NAMES} placeholder="Select" error={fieldErrors.project_name} />
-              <FormSelect id="tower" label="Tower" value={active?.form.tower ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, tower: v }, dirty: true }))} options={TOWERS} placeholder="Select" error={fieldErrors.tower} />
-              <FormSelect id="floor" label="Floor" value={active?.form.floor ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, floor: v }, dirty: true }))} options={FLOORS} placeholder="Select" error={fieldErrors.floor} />
-              <FormSelect id="flat" label="Flat" value={active?.form.flat ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, flat: v }, dirty: true }))} options={FLATS} placeholder="Select" error={fieldErrors.flat} />
-              <FormSelect id="room" label="Room" value={active?.form.room ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, room: v }, dirty: true }))} options={ROOMS} placeholder="Select" error={fieldErrors.room} className="sm:col-span-2" />
-              <FormSelect id="observation_type" label="Observation type" value={active?.form.observation_type ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, observation_type: v }, dirty: true }))} options={OBSERVATION_TYPES} placeholder="Select" error={fieldErrors.observation_type} />
-              <FormSelect id="severity" label="Severity" value={active?.form.severity ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, severity: v }, dirty: true }))} options={SEVERITIES} placeholder="Select" error={fieldErrors.severity} />
+              <FormSelect neutralFocus id="project_name" label="Project" value={active?.form.project_name ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, project_name: v }, dirty: true }))} options={PROJECT_NAMES} placeholder="Select" error={fieldErrors.project_name} />
+              <FormSelect neutralFocus id="tower" label="Tower" value={active?.form.tower ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, tower: v }, dirty: true }))} options={TOWERS} placeholder="Select" error={fieldErrors.tower} />
+              <FormSelect neutralFocus id="floor" label="Floor" value={active?.form.floor ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, floor: v }, dirty: true }))} options={FLOORS} placeholder="Select" error={fieldErrors.floor} />
+              <FormSelect neutralFocus id="flat" label="Flat" value={active?.form.flat ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, flat: v }, dirty: true }))} options={FLATS} placeholder="Select" error={fieldErrors.flat} />
+              <FormSelect neutralFocus id="room" label="Room" value={active?.form.room ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, room: v }, dirty: true }))} options={ROOMS} placeholder="Select" error={fieldErrors.room} className="sm:col-span-2" />
+              <FormSelect neutralFocus id="observation_type" label="Observation type" value={active?.form.observation_type ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, observation_type: v }, dirty: true }))} options={OBSERVATION_TYPES} placeholder="Select" error={fieldErrors.observation_type} />
+              <FormSelect neutralFocus id="severity" label="Severity" value={active?.form.severity ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, severity: v }, dirty: true }))} options={SEVERITIES} placeholder="Select" error={fieldErrors.severity} />
             </div>
 
             <button
@@ -492,7 +492,7 @@ export function WorkspacePage() {
                       type="date"
                       value={active?.form.site_visit_date ?? ''}
                       onChange={(e) => patchActive((p) => ({ ...p, form: { ...p.form, site_visit_date: e.target.value }, dirty: true }))}
-                      className="w-full rounded-2xl border border-black/[0.06] bg-white/85 px-3 py-3 text-[14px] outline-none focus:ring-2 focus:ring-[#0071e3]/20"
+                      className="w-full rounded-2xl border border-black/[0.06] bg-white/85 px-3 py-3 text-[14px] outline-none transition-[border-color] duration-200 focus:border-black/[0.22] focus:ring-0"
                     />
                   </label>
                   <label className="block">
@@ -501,16 +501,16 @@ export function WorkspacePage() {
                       type="date"
                       value={active?.form.slab_casting_date ?? ''}
                       onChange={(e) => patchActive((p) => ({ ...p, form: { ...p.form, slab_casting_date: e.target.value }, dirty: true }))}
-                      className="w-full rounded-2xl border border-black/[0.06] bg-white/85 px-3 py-3 text-[14px] outline-none focus:ring-2 focus:ring-[#0071e3]/20"
+                      className="w-full rounded-2xl border border-black/[0.06] bg-white/85 px-3 py-3 text-[14px] outline-none transition-[border-color] duration-200 focus:border-black/[0.22] focus:ring-0"
                     />
                   </label>
-                  <FormSelect id="inspection_status" label="Inspection status" value={active?.form.inspection_status ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, inspection_status: v }, dirty: true }))} options={INSPECTION_STATUSES} placeholder="Optional" />
-                  <FormSelect id="third_party_status" label="3rd-party status" value={active?.form.third_party_status ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, third_party_status: v }, dirty: true }))} options={THIRD_PARTY_INSPECTION_STATUSES} placeholder="Optional" />
+                  <FormSelect neutralFocus id="inspection_status" label="Inspection status" value={active?.form.inspection_status ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, inspection_status: v }, dirty: true }))} options={INSPECTION_STATUSES} placeholder="Optional" />
+                  <FormSelect neutralFocus id="third_party_status" label="3rd-party status" value={active?.form.third_party_status ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, third_party_status: v }, dirty: true }))} options={THIRD_PARTY_INSPECTION_STATUSES} placeholder="Optional" />
                 </motion.div>
               ) : null}
             </AnimatePresence>
 
-            <div className="rounded-2xl bg-white/65 p-4 ring-1 ring-black/[0.05]">
+            <div className="rounded-2xl bg-white/65 p-3 ring-1 ring-black/[0.05]">
               <p className="text-[12px] uppercase tracking-[0.08em] text-[#6e6e73]">Generated Observation</p>
               {active?.record ? (
                 <motion.div

@@ -10,7 +10,19 @@ export function FormSelect({
   placeholder,
   error,
   className = '',
+  /** Subtle black border on focus instead of blue ring (e.g. workspace observation panel). */
+  neutralFocus = false,
 }) {
+  const focusClasses = neutralFocus
+    ? error
+      ? 'focus:bg-white focus:ring-0 focus:border-red-400/80'
+      : 'focus:bg-white focus:ring-0 focus:border-black/[0.22]'
+    : error
+      ? 'focus:bg-white focus:ring-2 focus:ring-red-200/80 focus:border-red-400/80'
+      : 'focus:bg-white focus:ring-2 focus:ring-[#0071e3]/22 focus:border-[#0071e3]/38'
+
+  const borderClasses = error ? 'border-red-300/90' : 'border-black/[0.06]'
+
   return (
     <label htmlFor={id} className={`block ${className}`.trim()}>
       <span className="mb-1.5 block text-[13px] font-medium tracking-tight text-[#6e6e73]">{label}</span>
@@ -25,10 +37,8 @@ export function FormSelect({
           className={[
             'w-full appearance-none rounded-2xl border bg-[#f7f7f9] px-4 py-3 pr-10 text-[14px] font-normal text-[#111]',
             'shadow-[inset_0_1px_1px_rgb(255,255,255,0.75),0_1px_0_rgb(0,0,0,0.02)] outline-none transition-[box-shadow,background-color,border-color] duration-200',
-            'focus:bg-white focus:ring-2 focus:ring-[#0071e3]/22',
-            error
-              ? 'border-red-300/90 focus:border-red-400/80 focus:ring-red-200/80'
-              : 'border-black/[0.06] focus:border-[#0071e3]/38',
+            borderClasses,
+            focusClasses,
           ].join(' ')}
         >
           {placeholder ? (
