@@ -13,6 +13,7 @@ import {
   CloudCheck,
   RotateCcw,
   Eraser,
+  X,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { createObservation, generateReport, uploadImageWithProgress } from '../api.js'
@@ -152,6 +153,7 @@ export function WorkspacePage() {
   const [showDraftReveal, setShowDraftReveal] = useState(false)
   const [imageLoadState, setImageLoadState] = useState({})
   const [resetBusy, setResetBusy] = useState(false)
+  const [pendingDeleteId, setPendingDeleteId] = useState(null)
 
   useEffect(() => {
     itemsRef.current = items
@@ -160,6 +162,7 @@ export function WorkspacePage() {
   const active = useMemo(() => items.find((i) => i.id === activeId) ?? items[0], [items, activeId])
   const activePreviewSrc = useMemo(() => (active ? active.localUrl || toStaticImageSrc(active.imagePath) : ''), [active])
   const savedIds = useMemo(() => items.map((i) => i.record?.id).filter(Boolean), [items])
+  const hasAnyUploaded = useMemo(() => items.some((i) => Boolean(i.imagePath || i.localUrl)), [items])
   const enrichedItems = useMemo(
     () =>
       items.map((item) => {
@@ -283,6 +286,45 @@ export function WorkspacePage() {
   const pickForActive = () => {
     if (!activeId) return
     pickFor(activeId)
+  }
+
+  const addPhotoAdaptive = () => {
+    if (!hasAnyUploaded) {
+      pickForActive()
+      return
+    }
+    addDraft()
+  }
+
+  const removeDraft = (targetId) => {
+    const current = itemsRef.current || []
+    const idx = current.findIndex((x) => x.id === targetId)
+    if (idx < 0) return
+
+    const row = current[idx]
+    if (row?.localUrl?.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(row.localUrl)
+      } catch {
+        // ignore
+      }
+      localUrlRegistry.current.delete(row.localUrl)
+    }
+
+    const next = current.filter((x) => x.id !== targetId)
+    if (!next.length) {
+      nextId.current = 2
+      pendingUploadForId.current = 1
+      setItems([createDraft(1)])
+      setActiveId(1)
+      return
+    }
+
+    setItems(next)
+    if (activeId === targetId) {
+      const candidate = next[Math.min(idx, next.length - 1)] || next[0]
+      setActiveAndFocus(candidate.id)
+    }
   }
 
   const resetWorkspaceSession = () => {
@@ -531,13 +573,9 @@ export function WorkspacePage() {
                 <Eraser className="h-3.5 w-3.5" />
                 {resetBusy ? 'Resetting…' : 'Reset Session'}
               </button>
-              <ButtonSecondary className="gap-1.5 px-4 py-2.5 text-[13px]" onClick={pickForActive}>
+              <ButtonSecondary className="gap-1.5 px-4 py-2.5 text-[13px]" onClick={addPhotoAdaptive}>
                 <ImageUp className="h-3.5 w-3.5 opacity-75" />
-                Add Photos
-              </ButtonSecondary>
-              <ButtonSecondary className="gap-1.5 px-4 py-2.5 text-[13px]" onClick={addDraft}>
-                <Plus className="h-3.5 w-3.5 opacity-75" aria-hidden />
-                Add More Photos
+                {hasAnyUploaded ? 'Add More Photos' : 'Add Photo'}
               </ButtonSecondary>
             </div>
           </div>
@@ -624,80 +662,106 @@ export function WorkspacePage() {
           </div>
 
           <div className="mt-3 flex gap-2 overflow-x-auto rounded-2xl bg-white/45 p-2 ring-1 ring-black/[0.04]">
-            {enrichedItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  setActiveAndFocus(item.id)
-                }}
-                className={[
-                  'relative h-16 w-24 shrink-0 overflow-hidden rounded-xl ring-1 transition-all duration-200',
-                  item.id === activeId
-                    ? 'scale-[1.02] ring-black/[0.18]'
-                    : 'ring-black/[0.08] hover:-translate-y-0.5 hover:ring-black/[0.18]',
-                ].join(' ')}
-              >
-                {item.previewSrc ? (
-                  <>
-                    <img
-                      src={item.previewSrc}
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                      className={[
-                        'h-full w-full object-cover transition duration-300 ease-out',
-                        item.uploadStatus === 'uploading' ? 'opacity-45' : 'opacity-100',
-                      ].join(' ')}
-                      onLoad={(e) => {
-                        const el = e.currentTarget
-                        el.style.opacity = '1'
-                      }}
-                    />
-                    {item.uploadStatus === 'error' ? (
-                      <span className="absolute inset-0 flex items-center justify-center bg-black/[0.32] backdrop-blur-[1px]" aria-hidden />
-                    ) : null}
-                    {item.uploadStatus === 'error' ? (
+            <AnimatePresence initial={false}>
+              {enrichedItems.map((item) => (
+                <motion.button
+                  layout
+                  key={item.id}
+                  type="button"
+                  initial={{ opacity: 0, scale: 0.96, y: 4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.96, y: 6 }}
+                  transition={{ duration: 0.18 }}
+                  onClick={() => setActiveAndFocus(item.id)}
+                  className={[
+                    'group relative h-16 w-24 shrink-0 overflow-hidden rounded-xl ring-1 transition-all duration-200',
+                    item.id === activeId
+                      ? 'scale-[1.02] ring-black/[0.18]'
+                      : 'ring-black/[0.08] hover:-translate-y-0.5 hover:ring-black/[0.18]',
+                  ].join(' ')}
+                >
+                  {item.previewSrc ? (
+                    <>
+                      <img
+                        src={item.previewSrc}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className={[
+                          'h-full w-full object-cover transition duration-300 ease-out',
+                          item.uploadStatus === 'uploading' ? 'opacity-45' : 'opacity-100',
+                        ].join(' ')}
+                      />
+
                       <button
                         type="button"
                         onClick={(e) => {
                           e.preventDefault()
                           e.stopPropagation()
-                          retryUploadFor(item.id)
+                          setPendingDeleteId(item.id)
                         }}
-                        title="Retry upload"
-                        aria-label={`Retry upload for ${item.imageOriginalFilename ?? 'image'}`}
-                        className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center rounded-full bg-white/95 p-2 text-[#111] shadow-lg ring-1 ring-black/[0.08] transition hover:scale-[1.04]"
+                        title="Remove photo"
+                        aria-label="Remove photo"
+                        className={[
+                          'absolute right-1.5 top-1.5 inline-flex h-7 min-w-7 items-center justify-center rounded-full px-1.5',
+                          'border border-white/60 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(247,247,249,0.78))]',
+                          'text-[#1d1d1f] shadow-[0_14px_24px_-18px_rgb(0,0,0,0.65)] backdrop-blur-md',
+                          'opacity-0 transition-all duration-200 hover:scale-[1.04] hover:bg-white group-hover:opacity-100',
+                        ].join(' ')}
                       >
-                        <RotateCcw className="h-4 w-4" />
+                        <X className="h-3.5 w-3.5" strokeWidth={2.4} />
                       </button>
-                    ) : item.uploadStatus === 'success' && item.imagePath?.startsWith('https') ? (
-                      <CloudCheck className="pointer-events-none absolute bottom-1 left-1 h-4 w-4 text-emerald-500 drop-shadow" strokeWidth={2.35} aria-hidden />
-                    ) : null}
-                  </>
-                ) : (
-                  <span className="flex h-full w-full items-center justify-center bg-[#f1f2f5] text-[11px] text-[#6e6e73]">
-                    No image
-                  </span>
-                )}
-                <span
-                  className={[
-                    'absolute left-1.5 top-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-white/70',
-                    item.completed ? 'bg-emerald-500' : 'bg-[#a8acb4]',
-                  ].join(' ')}
-                />
-                {item.dirty ? (
-                  <span className="absolute right-1.5 top-1.5 rounded-full bg-[#0071e3] px-1.5 py-0.5 text-[9px] font-medium text-white">
-                    Unsaved
-                  </span>
-                ) : null}
-                {item.record?.id ? (
-                  <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[10px] text-white">
-                    #{item.record.id}
-                  </span>
-                ) : null}
-              </button>
-            ))}
+
+                      {item.uploadStatus === 'error' ? (
+                        <span className="absolute inset-0 flex items-center justify-center bg-black/[0.32] backdrop-blur-[1px]" aria-hidden />
+                      ) : null}
+                      {item.uploadStatus === 'error' ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            retryUploadFor(item.id)
+                          }}
+                          title="Retry upload"
+                          aria-label={`Retry upload for ${item.imageOriginalFilename ?? 'image'}`}
+                          className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center rounded-full bg-white/95 p-2 text-[#111] shadow-lg ring-1 ring-black/[0.08] transition hover:scale-[1.04]"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                        </button>
+                      ) : item.uploadStatus === 'success' && item.imagePath?.startsWith('https') ? (
+                        <CloudCheck
+                          className="pointer-events-none absolute bottom-1 left-1 h-4 w-4 text-emerald-500 drop-shadow"
+                          strokeWidth={2.35}
+                          aria-hidden
+                        />
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-black/[0.12] bg-white/55 text-center">
+                      <ImageUp className="h-4 w-4 text-black/40" strokeWidth={1.8} />
+                      <span className="px-1 text-[10px] font-medium text-[#6e6e73]">Add a photo</span>
+                    </div>
+                  )}
+                  <span
+                    className={[
+                      'absolute left-1.5 top-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-white/70',
+                      item.completed ? 'bg-emerald-500' : 'bg-[#a8acb4]',
+                    ].join(' ')}
+                  />
+                  {item.dirty ? (
+                    <span className="absolute right-1.5 bottom-1.5 rounded-full bg-[#0071e3] px-1.5 py-0.5 text-[9px] font-medium text-white">
+                      Unsaved
+                    </span>
+                  ) : null}
+                  {item.record?.id ? (
+                    <span className="absolute bottom-1 right-1 rounded-full bg-black/75 px-1.5 py-0.5 text-[10px] text-white">
+                      #{item.record.id}
+                    </span>
+                  ) : null}
+                </motion.button>
+              ))}
+            </AnimatePresence>
             {!enrichedItems.length ? (
               <div className="flex h-16 w-full items-center justify-center rounded-xl text-[12px] text-[#6e6e73]">
                 Add photos to start the filmstrip
@@ -881,6 +945,51 @@ export function WorkspacePage() {
           >
             {reportNotice}
           </motion.p>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {pendingDeleteId ? (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[70] bg-black/35 backdrop-blur-[2px]"
+              onClick={() => setPendingDeleteId(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="fixed left-1/2 top-1/2 z-[71] w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/35 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(246,247,250,0.86))] p-5 shadow-[0_34px_70px_-30px_rgb(0,0,0,0.55)] backdrop-blur-xl"
+            >
+              <p className="text-[16px] font-semibold tracking-tight text-[#111]">Remove photo?</p>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-[#6e6e73]">
+                This will remove the selected photo from the workspace queue.
+              </p>
+              <div className="mt-4 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteId(null)}
+                  className="rounded-xl border border-black/[0.09] bg-white/75 px-4 py-2 text-[13px] font-medium text-[#444] transition hover:border-black/[0.16] hover:bg-white hover:text-[#111]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = pendingDeleteId
+                    setPendingDeleteId(null)
+                    if (id) removeDraft(id)
+                  }}
+                  className="rounded-xl border border-black/[0.08] bg-[#111] px-4 py-2 text-[13px] font-semibold text-white shadow-[0_12px_24px_-16px_rgb(0,0,0,0.65)] transition hover:bg-black"
+                >
+                  Remove
+                </button>
+              </div>
+            </motion.div>
+          </>
         ) : null}
       </AnimatePresence>
     </div>
