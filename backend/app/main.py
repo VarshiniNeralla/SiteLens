@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     else:
         logger.warning("Cloudinary degraded reason=%s", cloudinary_health.get("reason"))
     llm_health = await llm_service.provider_health_safe()
+    llm_config_issues = llm_service.startup_provider_config_checks()
+    for issue in llm_config_issues:
+        logger.warning("AI provider config warning: %s", issue)
     if llm_health.available:
         logger.info(
             "AI provider ready provider=%s latency_ms=%s",

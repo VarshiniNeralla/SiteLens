@@ -8,6 +8,11 @@ from app.services.llm.schemas import LlmNormalizedResponse, ProviderHealth
 class LlmProvider(ABC):
     @property
     @abstractmethod
+    def endpoint(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def name(self) -> str:
         raise NotImplementedError
 

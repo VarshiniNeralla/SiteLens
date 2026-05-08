@@ -6,9 +6,11 @@ import time
 import httpx
 
 from app.config import settings
+from app.logging_config import get_logger
 from app.services.llm.base import LlmProvider
 from app.services.llm.schemas import LlmNormalizedResponse, ProviderHealth
 
+logger = get_logger(__name__)
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 SYSTEM_JSON_PROMPT = (
@@ -17,6 +19,11 @@ SYSTEM_JSON_PROMPT = (
 
 
 class GroqProvider(LlmProvider):
+    @property
+    def endpoint(self) -> str:
+        # Groq endpoint is fixed; never derived from LLM_BASE_URL.
+        return GROQ_CHAT_URL
+
     @property
     def name(self) -> str:
         return "groq"
@@ -43,11 +50,16 @@ class GroqProvider(LlmProvider):
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.2,
+            "max_tokens": settings.llm_max_tokens,
         }
+        started = time.perf_counter()
+        logger.info("LLM request provider=%s endpoint=%s model=%s", self.name, self.endpoint, settings.llm_model)
         async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
-            resp = await client.post(GROQ_CHAT_URL, headers=self._headers(), json=payload)
+            resp = await client.post(self.endpoint, headers=self._headers(), json=payload)
             resp.raise_for_status()
             data = resp.json()
+        elapsed = (time.perf_counter() - started) * 1000.0
+        logger.info("LLM success provider=%s endpoint=%s latency_ms=%.1f", self.name, self.endpoint, elapsed)
         content = str(data["choices"][0]["message"]["content"]).strip()
         parsed = json.loads(content)
         parsed["provider"] = self.name
@@ -67,12 +79,13 @@ class GroqProvider(LlmProvider):
         try:
             async with httpx.AsyncClient(timeout=min(10.0, settings.llm_timeout_seconds)) as client:
                 response = await client.post(
-                    GROQ_CHAT_URL,
+                    self.endpoint,
                     headers=self._headers(),
                     json={
                         "model": settings.llm_model,
                         "messages": [{"role": "user", "content": "Reply with JSON: {\"ok\":\"yes\"}"}],
                         "temperature": 0,
+                        "max_tokens": 32,
                     },
                 )
                 response.raise_for_status()

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     llm_model: str = "default"
     llm_timeout_seconds: float = 120.0
+    llm_max_tokens: int = 700
     llm_provider: str = "local"
     groq_api_key: str = ""
 
@@ -70,6 +71,14 @@ class Settings(BaseSettings):
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
         return str(v).strip() if isinstance(v, str) else v
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def coerce_llm_provider(cls, v: str | None) -> str:
+        provider = (str(v or "local")).strip().lower()
+        if provider not in {"local", "groq"}:
+            return "local"
+        return provider
 
     @field_validator("upload_dir", "reports_dir", "data_dir", "ppt_layout_path", mode="before")
     @classmethod

@@ -50,6 +50,7 @@ async def _invoke_provider(
     prompt: str,
     image_url: str | None = None,
     retry_on_malformed: bool = True,
+    retry_on_transport: bool = True,
 ) -> LlmNormalizedResponse:
     global _last_ai_response_ms, _last_ai_failure  # noqa: PLW0603
     if not _BREAKER.allow():
@@ -82,12 +83,50 @@ async def _invoke_provider(
         _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0, retries=1 if retry_on_malformed else 0)
         _last_ai_failure = str(exc)
         if retry_on_malformed:
-            return await _invoke_provider(op=op, prompt=prompt, image_url=image_url, retry_on_malformed=False)
+            logger.warning("LLM malformed output provider=%s endpoint=%s retrying_once=true", provider.name, provider.endpoint)
+            return await _invoke_provider(
+                op=op,
+                prompt=prompt,
+                image_url=image_url,
+                retry_on_malformed=False,
+                retry_on_transport=retry_on_transport,
+            )
+        logger.warning("LLM malformed output provider=%s endpoint=%s fallback_applied=true", provider.name, provider.endpoint)
         return _normalize_fallback(provider.name)
-    except Exception:
+    except httpx.HTTPError as exc:
+        _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0, retries=1 if retry_on_transport else 0)
+        _last_ai_failure = str(exc)
+        if retry_on_transport:
+            logger.warning(
+                "LLM transport failure provider=%s endpoint=%s retrying_once=true err=%s",
+                provider.name,
+                provider.endpoint,
+                _short_exc(exc),
+            )
+            return await _invoke_provider(
+                op=op,
+                prompt=prompt,
+                image_url=image_url,
+                retry_on_malformed=retry_on_malformed,
+                retry_on_transport=False,
+            )
+        logger.warning(
+            "LLM transport failure provider=%s endpoint=%s fallback_applied=true err=%s",
+            provider.name,
+            provider.endpoint,
+            _short_exc(exc),
+        )
+        return _normalize_fallback(provider.name)
+    except Exception as exc:  # noqa: BLE001
         _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0)
         _last_ai_failure = "provider_call_failed"
-        raise
+        logger.warning(
+            "LLM provider failure provider=%s endpoint=%s fallback_applied=true err=%s",
+            provider.name,
+            provider.endpoint,
+            _short_exc(exc),
+        )
+        return _normalize_fallback(provider.name)
 
 
 async def generate_observation_text_safe(
@@ -238,6 +277,18 @@ async def provider_health_safe() -> ProviderHealth:
         return health
     except Exception as exc:  # noqa: BLE001
         return ProviderHealth(provider=_provider(), available=False, latency_ms=None, detail=str(exc))
+
+
+def startup_provider_config_checks() -> list[str]:
+    provider = _provider()
+    issues: list[str] = []
+    if provider == "groq":
+        if not settings.groq_api_key.strip():
+            issues.append("LLM_PROVIDER=groq but GROQ_API_KEY is missing")
+    elif provider == "local":
+        if not str(settings.llm_base_url or "").strip() and not str(settings.llm_chat_url or "").strip():
+            issues.append("LLM_PROVIDER=local but LLM_BASE_URL/LLM_CHAT_URL is missing")
+    return issues
 
 
 def provider_runtime_metrics() -> dict[str, object]:
