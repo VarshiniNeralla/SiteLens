@@ -27,6 +27,7 @@ import {
   updateObservation,
   downloadUrl as buildDownloadHref,
 } from '../api.js'
+import { observationImageSrc } from '../utils/observationImage.js'
 import { ButtonPrimary, ButtonSecondary } from '../components/ui/Button.jsx'
 import { Skeleton } from '../components/ui/Skeleton.jsx'
 import { FormSelect } from '../components/FormSelect.jsx'
@@ -546,12 +547,16 @@ export function ReportsPage() {
                       className="relative h-16 w-20 overflow-hidden rounded-xl bg-[#eceef2]"
                     >
                       <img
-                        src={o.image_path.startsWith('/') ? o.image_path : `/static/${o.image_path.replace(/^uploads\//, 'uploads/')}`}
+                        src={observationImageSrc(o)}
+                        loading="lazy"
+                        decoding="async"
                         onError={(e) => {
-                          e.currentTarget.style.display = 'none'
+                          const el = e.currentTarget
+                          el.style.opacity = '0'
+                          el.closest('button')?.classList.add('bg-[#dfe3ea]')
                         }}
                         alt=""
-                        className="h-full w-full object-cover"
+                        className="h-full w-full object-cover transition-opacity duration-300"
                       />
                     </button>
                     <div className="min-w-0">

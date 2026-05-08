@@ -11,12 +11,28 @@ from app.store import AppStore
 router = APIRouter(prefix="/observations", tags=["observations"])
 
 
-def _verify_image(image_path: str) -> None:
-    p = Path(image_path)
+def _verify_image_reference(uri: str) -> None:
+    s = (uri or "").strip()
+    if not s:
+        raise HTTPException(status_code=400, detail="Image reference is empty")
+    if s.startswith("http://") or s.startswith("https://"):
+        try:
+            with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+                r = client.head(s)
+                if r.status_code >= 400:
+                    r = client.get(s, headers={"Range": "bytes=0-8191"})
+                r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image URL is not reachable (check Cloudinary/CORS/CDN): {e}",
+            ) from e
+        return
+    p = Path(s)
     if not p.is_absolute():
-        p = Path.cwd() / image_path
+        p = Path.cwd() / s
     if not p.is_file():
-        raise HTTPException(status_code=400, detail=f"Image not found at {image_path}")
+        raise HTTPException(status_code=400, detail=f"Image not found at {s}")
 
 
 @router.post("", response_model=ObservationOut, status_code=201)
@@ -24,17 +40,11 @@ def create_observation(
     payload: ObservationCreate,
     store: AppStore = Depends(get_store_dep),
 ) -> ObservationOut:
-    _verify_image(payload.image_path)
+    _verify_image_reference(payload.image_path)
     try:
         return observation_service.create_observation(store, payload)
     except ValueError as e:
-        detail = str(e)
-        status = (
-            502 if detail.startswith("Invalid response") or "language model" in detail else 400
-        )
-        raise HTTPException(status_code=status, detail=detail) from e
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Upstream LLM HTTP error: {e}") from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("", response_model=list[ObservationOut])
@@ -60,17 +70,11 @@ def update_observation(
     store: AppStore = Depends(get_store_dep),
 ) -> ObservationOut:
     if body.image_path is not None:
-        _verify_image(body.image_path)
+        _verify_image_reference(body.image_path)
     try:
         out = observation_service.update_observation(store, obs_id, body)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Upstream LLM HTTP error: {e}") from e
     except ValueError as e:
-        detail = str(e)
-        status = (
-            502 if detail.startswith("Invalid response") or "language model" in detail else 400
-        )
-        raise HTTPException(status_code=status, detail=detail) from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if out is None:
         raise HTTPException(status_code=404, detail="Observation not found")
     return out

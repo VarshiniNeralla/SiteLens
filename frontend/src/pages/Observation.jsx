@@ -61,6 +61,7 @@ export function ObservationPage() {
   const location = useLocation()
   const incomingPath = location.state?.imagePath ?? ''
   const previewUrl = location.state?.previewUrl ?? ''
+  const cloudinaryIncoming = location.state?.cloudinary ?? null
 
   const [form, setForm] = useState(emptyForm())
   const [imagePath, setImagePath] = useState(() => incomingPath)
@@ -121,6 +122,11 @@ export function ObservationPage() {
         inspection_status: form.inspection_status,
         third_party_status: form.third_party_status,
         image_path: imageTrimmed,
+        manually_written_observation: '',
+        cloudinary_public_id: cloudinaryIncoming?.public_id ?? null,
+        cloudinary_secure_url: cloudinaryIncoming?.secure_url ?? (imageTrimmed.startsWith('http') ? imageTrimmed : null),
+        image_uploaded_at: cloudinaryIncoming?.uploaded_at ?? null,
+        image_original_filename: cloudinaryIncoming?.original_filename ?? null,
         generate_text: form.generate_text,
       }
       const resp = await createObservation(payload)
@@ -158,8 +164,14 @@ export function ObservationPage() {
         className="overflow-hidden rounded-[28px] bg-[#e8e8ed] ring-1 ring-black/[0.04]"
       >
         <div className="flex aspect-[16/10] max-h-[min(52vh,440px)] w-full items-center justify-center md:aspect-[21/9] md:max-h-[min(48vh,400px)]">
-          {previewUrl ? (
-            <img src={previewUrl} alt="Site reference" className="h-full w-full object-contain" />
+          {previewUrl || (imageTrimmed && imageTrimmed.startsWith('http')) ? (
+            <img
+              src={previewUrl || imageTrimmed}
+              alt="Site reference"
+              loading="eager"
+              decoding="async"
+              className="h-full w-full object-contain"
+            />
           ) : (
             <p className="px-8 text-center text-[15px] text-[#6e6e73]">
               Upload a photo first — preview shows here for this session.
@@ -171,13 +183,13 @@ export function ObservationPage() {
       <form id="observation-form" onSubmit={submit} noValidate className="mt-14 space-y-12">
         <div className="space-y-2">
           <label className="text-[13px] font-medium text-[#6e6e73]" htmlFor="image_path">
-            Server path
+            Image URL or server path
           </label>
           <input
             id="image_path"
-            title="Path returned after upload"
+            title="Cloudinary HTTPS URL or upload path returned after upload"
             value={imagePath}
-            placeholder="Filled automatically after upload"
+            placeholder="Optimized Cloud URL or uploads/… path"
             onChange={(e) => onImageChange(e.target.value)}
             className={[
               inputBase,

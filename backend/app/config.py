@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     api_prefix: str = ""
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # Cloudinary — when cloud_name + key + secret set, uploads go to CDN (otherwise local disk).
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
+    cloudinary_folder: str = "SiteLens"
+
     @field_validator("ppt_template_path", mode="before")
     @classmethod
     def coerce_optional_template(cls, v: Path | str | None) -> Path | None:

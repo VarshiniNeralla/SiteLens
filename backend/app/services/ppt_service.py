@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -222,27 +223,27 @@ def _add_rect_border(slide: object, box: Rect) -> None:
     rect.line.width = Emu(LINE_W_EMU)
 
 
-def _add_cropped_image(slide: object, image_box: Rect, image_path: Path) -> None:
-    with Image.open(image_path) as im:
-        img_w, img_h = im.size
-        if img_w <= 0 or img_h <= 0:
-            raise ValueError("Image has invalid dimensions")
-        target_ratio = image_box.width / image_box.height
-        img_ratio = img_w / img_h
-        if img_ratio > target_ratio:
-            crop_h = img_h
-            crop_w = int(crop_h * target_ratio)
-            left = (img_w - crop_w) // 2
-            top = 0
-        else:
-            crop_w = img_w
-            crop_h = int(crop_w / target_ratio)
-            left = 0
-            top = (img_h - crop_h) // 2
-        cropped = im.crop((left, top, left + crop_w, top + crop_h))
-        buff = BytesIO()
-        cropped.save(buff, format="PNG")
-        buff.seek(0)
+def _paste_cropped_raster(slide: object, image_box: Rect, source: Image.Image) -> None:
+    im = source
+    img_w, img_h = im.size
+    if img_w <= 0 or img_h <= 0:
+        raise ValueError("Image has invalid dimensions")
+    target_ratio = image_box.width / image_box.height
+    img_ratio = img_w / img_h
+    if img_ratio > target_ratio:
+        crop_h = img_h
+        crop_w = int(crop_h * target_ratio)
+        left = (img_w - crop_w) // 2
+        top = 0
+    else:
+        crop_w = img_w
+        crop_h = int(crop_w / target_ratio)
+        left = 0
+        top = (img_h - crop_h) // 2
+    cropped = im.crop((left, top, left + crop_w, top + crop_h))
+    buff = BytesIO()
+    cropped.save(buff, format="PNG")
+    buff.seek(0)
 
     slide.shapes.add_picture(
         buff,
@@ -251,6 +252,31 @@ def _add_cropped_image(slide: object, image_box: Rect, image_path: Path) -> None
         width=Inches(image_box.width),
         height=Inches(image_box.height),
     )
+
+
+def _load_observation_raster(obs: ObservationRecord, cwd: Path) -> Image.Image | None:
+    ref = (obs.image_path or "").strip()
+    if ref.startswith(("http://", "https://")):
+        url = ((obs.cloudinary_secure_url or ref) or "").strip()
+        try:
+            with httpx.Client(timeout=90.0, follow_redirects=True) as client:
+                r = client.get(url)
+                r.raise_for_status()
+                im = Image.open(BytesIO(r.content))
+                im.load()
+                return im.copy()
+        except Exception as exc:  # noqa: BLE001 — PIL/network surface
+            logger.warning("Could not fetch observation image (%s): %s", url[:80], exc)
+            return None
+
+    img_path = Path(obs.image_path)
+    if not img_path.is_absolute():
+        img_path = cwd / img_path
+    if not img_path.is_file():
+        return None
+    im = Image.open(img_path)
+    im.load()
+    return im.copy()
 
 
 def _add_footer(slide: object, project_name: str, slide_no: int) -> None:
@@ -287,7 +313,7 @@ def _add_footer(slide: object, project_name: str, slide_no: int) -> None:
     rp.alignment = PP_ALIGN.RIGHT
 
 
-def _add_missing_image_placeholder(slide: object, image_box: Rect, image_path: Path) -> None:
+def _add_missing_image_placeholder(slide: object, image_box: Rect, hint: str) -> None:
     ph = slide.shapes.add_textbox(
         Inches(image_box.left),
         Inches(image_box.top),
@@ -298,7 +324,7 @@ def _add_missing_image_placeholder(slide: object, image_box: Rect, image_path: P
     tf.clear()
     p = tf.paragraphs[0]
     r = p.add_run()
-    r.text = f"Image missing\n{image_path.name}"
+    r.text = f"Image unavailable\n{hint}"
     r.font.name = FONT_FAMILY
     r.font.size = Pt(9)
     r.font.color.rgb = TEXT_COLOR
@@ -354,15 +380,16 @@ def _render_observation_block(
     table_top = image_box.bottom + TABLE_TOP_GAP
     table_box = Rect(block.left, table_top, block.width, block.bottom - table_top)
 
-    img_path = Path(obs.image_path)
-    if not img_path.is_absolute():
-        img_path = cwd / img_path
-
-    if img_path.is_file():
-        _add_cropped_image(slide, image_box, img_path)
+    raster = _load_observation_raster(obs, cwd)
+    if raster is not None:
+        try:
+            _paste_cropped_raster(slide, image_box, raster)
+        finally:
+            raster.close()
         _add_rect_border(slide, image_box)
     else:
-        _add_missing_image_placeholder(slide, image_box, img_path)
+        hint = (obs.image_original_filename or Path(obs.image_path).name)[:80] or "—"
+        _add_missing_image_placeholder(slide, image_box, hint)
         _add_rect_border(slide, image_box)
 
     _add_table(slide, table_box, obs, obs_no)

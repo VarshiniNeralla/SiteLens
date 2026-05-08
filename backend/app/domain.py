@@ -23,6 +23,13 @@ class ObservationRecord:
     generated_observation: str
     generated_recommendation: str
     created_at: datetime
+    cloudinary_public_id: str | None = None
+    cloudinary_secure_url: str | None = None
+    image_uploaded_at: datetime | None = None
+    image_original_filename: str | None = None
+    manually_written_observation: str = ""
+    ai_status: str = "unavailable"
+    ai_error: str | None = None
 
 
 @dataclass

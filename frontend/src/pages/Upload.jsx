@@ -69,7 +69,23 @@ export function UploadPage() {
 
   const continueWithPath = () => {
     if (!result?.path) return
-    navigate('/observations/new', { state: { imagePath: result.path, previewUrl } })
+    const cloudUrl = result.optimized_url || result.secure_url || result.path || ''
+    navigate('/observations/new', {
+      state: {
+        imagePath: result.path,
+        previewUrl: /^https?:\/\//i.test(cloudUrl) ? cloudUrl : previewUrl,
+        cloudinary:
+          result.public_id && result.secure_url
+            ? {
+                public_id: result.public_id,
+                secure_url: result.secure_url,
+                optimized_url: result.optimized_url || result.path,
+                uploaded_at: result.uploaded_at,
+                original_filename: result.filename,
+              }
+            : null,
+      },
+    })
   }
 
   const looksLikeAllowedImage = useCallback((f) => {

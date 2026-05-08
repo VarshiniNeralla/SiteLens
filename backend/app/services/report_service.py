@@ -5,7 +5,7 @@ from app.config import settings
 from app.domain import ObservationRecord, ReportRecord
 from app.logging_config import get_logger
 from app.schemas.report import ReportOut
-from app.services import excel_service, llm_service, pdf_service, ppt_service
+from app.services import excel_service, llm_service, observation_text, pdf_service, ppt_service
 from app.store import AppStore, utcnow
 
 logger = get_logger(__name__)
@@ -52,16 +52,16 @@ def generate_report_sync(
     proj_name = project_names.pop()
 
     report_title = title or f"Quality walkthrough — {proj_name}"
-    data_title = f"Quality walkthrough data — {proj_name}" if proj_name else "Quality walkthrough data — Mixed Observations"
-    summary_text = llm_service.generate_report_summary(proj_name, [o.generated_observation for o in ordered])
+    narrative_lines = [observation_text.effective_observation_narrative(o) for o in ordered]
+    summary_text = llm_service.generate_report_summary_safe(proj_name, narrative_lines)
 
     pid = ordered[0].project_id
 
     rid = store.allocate_report_id()
     export_base = _sanitize_export_basename(report_title)
-    data_export_base = _sanitize_export_basename(data_title)
+    xlsx_export_base = sitelens_xlsx_stem(proj_name)
     ppt_path = _next_available_export_path(Path(settings.reports_dir), export_base, ".pptx")
-    xlsx_path = _next_available_export_path(Path(settings.reports_dir), data_export_base, ".xlsx")
+    xlsx_path = _next_available_export_path(Path(settings.reports_dir), xlsx_export_base, ".xlsx")
 
     oid_list = [o.id for o in ordered]
 
@@ -161,6 +161,13 @@ def list_reports(store: AppStore) -> list[ReportRecord]:
 
 def get_report(store: AppStore, report_id: int) -> ReportRecord | None:
     return store.get_report(report_id)
+
+
+def sitelens_xlsx_stem(project_name: str) -> str:
+    slug = _sanitize_export_basename(project_name).replace(" ", "_").strip("_")
+    if not slug:
+        slug = "Observations"
+    return f"SiteLens_Quality_Walkthrough_{slug}"
 
 
 def _sanitize_export_basename(name: str) -> str:

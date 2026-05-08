@@ -31,6 +31,15 @@ def _parse_datetime(raw: str) -> datetime:
     return dt
 
 
+def _migration_ai_status(d: dict[str, Any]) -> str:
+    raw = str(d.get("ai_status") or "").strip().lower()
+    if raw in {"pending", "completed", "failed", "unavailable", "skipped"}:
+        return raw
+    if (d.get("generated_observation") or "").strip():
+        return "completed"
+    return "unavailable"
+
+
 class AppStore:
     """Thread-safe KV store persisted as one JSON file."""
 
@@ -92,6 +101,13 @@ class AppStore:
             "generated_observation": o.generated_observation,
             "generated_recommendation": o.generated_recommendation,
             "created_at": o.created_at.isoformat(),
+            "cloudinary_public_id": o.cloudinary_public_id,
+            "cloudinary_secure_url": o.cloudinary_secure_url,
+            "image_uploaded_at": o.image_uploaded_at.isoformat() if o.image_uploaded_at else None,
+            "image_original_filename": o.image_original_filename,
+            "manually_written_observation": o.manually_written_observation,
+            "ai_status": o.ai_status,
+            "ai_error": o.ai_error,
         }
 
     def _parse_observation(self, d: dict[str, Any]) -> ObservationRecord:
@@ -115,6 +131,13 @@ class AppStore:
             generated_observation=str(d.get("generated_observation", "")),
             generated_recommendation=str(d.get("generated_recommendation", "")),
             created_at=_parse_datetime(str(d["created_at"])),
+            cloudinary_public_id=(str(d["cloudinary_public_id"]) if d.get("cloudinary_public_id") else None),
+            cloudinary_secure_url=(str(d["cloudinary_secure_url"]) if d.get("cloudinary_secure_url") else None),
+            image_uploaded_at=_parse_datetime(str(d["image_uploaded_at"])) if d.get("image_uploaded_at") else None,
+            image_original_filename=(str(d["image_original_filename"]) if d.get("image_original_filename") else None),
+            manually_written_observation=str(d.get("manually_written_observation") or ""),
+            ai_status=_migration_ai_status(d),
+            ai_error=(str(d["ai_error"]) if d.get("ai_error") else None),
         )
 
     def _dump_report(self, r: ReportRecord) -> dict[str, Any]:

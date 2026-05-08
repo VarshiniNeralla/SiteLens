@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from app.api.deps import get_store_dep
 from app.domain import ReportRecord
 from app.schemas.report import ReportGenerateRequest, ReportOut, ReportSummaryOut, ReportUpdateRequest
-from app.services.report_service import generate_report_sync, get_report, list_reports
+from app.services.report_service import generate_report_sync, get_report, list_reports, sitelens_xlsx_stem
 from app.store import AppStore
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -45,16 +45,16 @@ def _build_download_basename(store: AppStore, row: ReportRecord) -> str:
 def _build_download_basename_for_format(store: AppStore, row: ReportRecord, fmt: str) -> str:
     fmt_norm = fmt.lower().strip()
     if fmt_norm == "xlsx":
-        proj = _primary_project_name(store, row) or "Mixed Observations"
-        title = f"Quality walkthrough data — {proj}"
-        same_title_count = sum(
+        proj = _primary_project_name(store, row) or "Observations"
+        base = sitelens_xlsx_stem(proj)
+        same_project_reports = sum(
             1
             for r in list_reports(store)
-            if (_primary_project_name(store, r) or "Mixed Observations").casefold() == proj.casefold()
+            if (_primary_project_name(store, r) or "Observations").casefold() == proj.casefold()
         )
-        if same_title_count > 1:
-            title = f"{title} — {row.created_at.date().isoformat()}"
-        return _sanitize_download_basename(title)
+        if same_project_reports > 1:
+            base = f"{base}_{row.created_at.date().isoformat()}"
+        return base[:120]
     return _build_download_basename(store, row)
 
 

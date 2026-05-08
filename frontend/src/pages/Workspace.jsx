@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ImageUp, LoaderCircle, Presentation, Plus, ChevronDown, ChevronUp, Save, ChevronLeft, ChevronRight } from 'lucide-react'
+import {
+  ImageUp,
+  LoaderCircle,
+  Presentation,
+  Plus,
+  ChevronDown,
+  ChevronUp,
+  Save,
+  ChevronLeft,
+  ChevronRight,
+  CloudCheck,
+  RotateCcw,
+  Eraser,
+} from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { createObservation, generateReport, uploadImage } from '../api.js'
+import { createObservation, generateReport, uploadImageWithProgress } from '../api.js'
 import { FormSelect } from '../components/FormSelect.jsx'
 import { ButtonPrimary, ButtonSecondary } from '../components/ui/Button.jsx'
 import {
@@ -20,6 +33,7 @@ import {
 const REQUIRED_KEYS = ['project_name', 'tower', 'floor', 'flat', 'room', 'observation_type', 'severity']
 const TOAST_TIMEOUT_MS = 2000
 const REPORT_READY_TOAST_TIMEOUT_MS = 7000
+const WORKSPACE_DRAFTS_KEY = 'sitelens.workspace.v1'
 
 const emptyForm = () => ({
   project_name: '',
@@ -41,6 +55,13 @@ function createDraft(id) {
     localUrl: '',
     file: null,
     imagePath: '',
+    cloudinaryPublicId: '',
+    cloudinarySecureUrl: '',
+    imageUploadedAt: null,
+    imageOriginalFilename: '',
+    uploadProgress: 0,
+    uploadStatus: 'idle',
+    uploadError: '',
     form: emptyForm(),
     record: null,
     aiDraft: null,
@@ -74,12 +95,51 @@ function toStaticImageSrc(imagePath) {
   return `/static/${imagePath.replace(/^\/+/, '')}`
 }
 
+function serializeDraft(item) {
+  return {
+    id: item.id,
+    imagePath: item.imagePath,
+    cloudinaryPublicId: item.cloudinaryPublicId,
+    cloudinarySecureUrl: item.cloudinarySecureUrl,
+    imageUploadedAt: item.imageUploadedAt,
+    imageOriginalFilename: item.imageOriginalFilename,
+    uploadProgress: item.uploadProgress,
+    uploadStatus: item.uploadStatus,
+    uploadError: item.uploadError,
+    form: item.form,
+    record: item.record,
+    aiDraft: item.aiDraft,
+    dirty: item.dirty,
+  }
+}
+
+function deserializeDraft(raw) {
+  const base = createDraft(Number(raw?.id) || Date.now())
+  return {
+    ...base,
+    id: Number(raw?.id) || base.id,
+    imagePath: typeof raw?.imagePath === 'string' ? raw.imagePath : '',
+    cloudinaryPublicId: typeof raw?.cloudinaryPublicId === 'string' ? raw.cloudinaryPublicId : '',
+    cloudinarySecureUrl: typeof raw?.cloudinarySecureUrl === 'string' ? raw.cloudinarySecureUrl : '',
+    imageUploadedAt: raw?.imageUploadedAt ?? null,
+    imageOriginalFilename: typeof raw?.imageOriginalFilename === 'string' ? raw.imageOriginalFilename : '',
+    uploadProgress: Number(raw?.uploadProgress) || 0,
+    uploadStatus: raw?.uploadStatus || (raw?.imagePath ? 'success' : 'idle'),
+    uploadError: typeof raw?.uploadError === 'string' ? raw.uploadError : '',
+    form: { ...emptyForm(), ...(raw?.form || {}) },
+    record: raw?.record || null,
+    aiDraft: raw?.aiDraft || null,
+    dirty: Boolean(raw?.dirty),
+  }
+}
+
 export function WorkspacePage() {
   const navigate = useNavigate()
   const inputRef = useRef(null)
   const detailsPanelRef = useRef(null)
   const pendingUploadForId = useRef(1)
   const localUrlRegistry = useRef(new Set())
+  const itemsRef = useRef(null)
   const nextId = useRef(2)
   const [items, setItems] = useState([createDraft(1)])
   const [activeId, setActiveId] = useState(1)
@@ -91,6 +151,11 @@ export function WorkspacePage() {
   const [reportReadyToast, setReportReadyToast] = useState(null)
   const [showDraftReveal, setShowDraftReveal] = useState(false)
   const [imageLoadState, setImageLoadState] = useState({})
+  const [resetBusy, setResetBusy] = useState(false)
+
+  useEffect(() => {
+    itemsRef.current = items
+  }, [items])
 
   const active = useMemo(() => items.find((i) => i.id === activeId) ?? items[0], [items, activeId])
   const activePreviewSrc = useMemo(() => (active ? active.localUrl || toStaticImageSrc(active.imagePath) : ''), [active])
@@ -126,6 +191,35 @@ export function WorkspacePage() {
   }, [])
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(WORKSPACE_DRAFTS_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      const rows = Array.isArray(parsed?.items) ? parsed.items.map(deserializeDraft).filter(Boolean) : []
+      if (!rows.length) return
+      setItems(rows)
+      setActiveId(Number(parsed?.activeId) || rows[0].id)
+      setExpandedAdvanced(Boolean(parsed?.expandedAdvanced))
+      nextId.current = Math.max(...rows.map((x) => Number(x.id) || 0), 0) + 1
+    } catch {
+      // Ignore malformed local cache; workspace falls back to default draft.
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      const payload = {
+        activeId,
+        expandedAdvanced,
+        items: items.map(serializeDraft),
+      }
+      localStorage.setItem(WORKSPACE_DRAFTS_KEY, JSON.stringify(payload))
+    } catch {
+      // Ignore storage quota/errors; app still works in-memory.
+    }
+  }, [items, activeId, expandedAdvanced])
+
+  useEffect(() => {
     if (!globalError) return undefined
     const id = setTimeout(() => setGlobalError(''), TOAST_TIMEOUT_MS)
     return () => clearTimeout(id)
@@ -142,6 +236,13 @@ export function WorkspacePage() {
     const id = setTimeout(() => setReportReadyToast(null), REPORT_READY_TOAST_TIMEOUT_MS)
     return () => clearTimeout(id)
   }, [reportReadyToast])
+
+  useEffect(() => {
+    if (!items.length) return
+    if (!items.some((i) => i.id === activeId)) {
+      setActiveId(items[0].id)
+    }
+  }, [items, activeId])
 
   const patchById = (id, mutator) => {
     setItems((prev) => updateById(prev, id, mutator))
@@ -184,6 +285,33 @@ export function WorkspacePage() {
     pickFor(activeId)
   }
 
+  const resetWorkspaceSession = () => {
+    if (resetBusy) return
+    const shouldReset = window.confirm(
+      'Reset workspace session?\n\nThis clears current draft cards and local session cache for this browser.',
+    )
+    if (!shouldReset) return
+    setResetBusy(true)
+    try {
+      const registry = localUrlRegistry.current
+      for (const url of registry) URL.revokeObjectURL(url)
+      registry.clear()
+      localStorage.removeItem(WORKSPACE_DRAFTS_KEY)
+      nextId.current = 2
+      pendingUploadForId.current = 1
+      setItems([createDraft(1)])
+      setActiveId(1)
+      setExpandedAdvanced(false)
+      setFieldErrors({})
+      setGlobalError('')
+      setReportNotice('Workspace session reset.')
+      setReportReadyToast(null)
+      setImageLoadState({})
+    } finally {
+      setResetBusy(false)
+    }
+  }
+
   const goToPreviousImage = () => {
     if (!hasPrevious) return
     const prevItem = enrichedItems[activeIndex - 1]
@@ -216,6 +344,13 @@ export function WorkspacePage() {
         file,
         localUrl,
         imagePath: '',
+        cloudinaryPublicId: '',
+        cloudinarySecureUrl: '',
+        imageUploadedAt: null,
+        imageOriginalFilename: '',
+        uploadProgress: 0,
+        uploadStatus: 'uploading',
+        uploadError: '',
         record: null,
         aiDraft: null,
         dirty: true,
@@ -225,12 +360,48 @@ export function WorkspacePage() {
     setActiveId(targetId)
     setGlobalError('')
     try {
-      const uploaded = await uploadImage(file)
-      patchById(targetId, (prev) => ({ ...prev, uploading: false, imagePath: uploaded.path || '' }))
+      const uploaded = await uploadImageWithProgress(file, {
+        onProgress: (pct) => patchById(targetId, (prev) => ({ ...prev, uploadProgress: pct })),
+      })
+      patchById(targetId, (prev) => {
+        if (prev.localUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(prev.localUrl)
+          localUrlRegistry.current.delete(prev.localUrl)
+        }
+        const optimized = uploaded.optimized_url || uploaded.path || ''
+        const secure = uploaded.secure_url || optimized
+        const originalName = uploaded.filename || file.name || ''
+        const uploadedAt = uploaded.uploaded_at ?? null
+        return {
+          ...prev,
+          uploading: false,
+          uploadProgress: 100,
+          uploadStatus: 'success',
+          uploadError: '',
+          localUrl: '',
+          file: null,
+          imagePath: optimized || uploaded.path || '',
+          cloudinaryPublicId: uploaded.public_id || '',
+          cloudinarySecureUrl: secure || '',
+          imageUploadedAt: uploadedAt,
+          imageOriginalFilename: originalName,
+        }
+      })
     } catch (e) {
-      patchById(targetId, (prev) => ({ ...prev, uploading: false }))
+      patchById(targetId, (prev) => ({
+        ...prev,
+        uploading: false,
+        uploadStatus: 'error',
+        uploadError: e.message || 'Upload failed.',
+      }))
       setGlobalError(e.message || 'Upload failed.')
     }
+  }
+
+  const retryUploadFor = (targetId) => {
+    const row = itemsRef.current?.find((i) => i.id === targetId)
+    if (row?.file) void onFile(row.file, targetId)
+    else pickFor(targetId)
   }
 
   const jumpToNextIncomplete = (fromId) => {
@@ -262,22 +433,31 @@ export function WorkspacePage() {
         inspection_status: snapshot.form.inspection_status || 'Yet to be Confirmed',
         third_party_status: snapshot.form.third_party_status || 'Yet to be Confirmed',
         image_path: snapshot.imagePath,
+        cloudinary_public_id: snapshot.cloudinaryPublicId || null,
+        cloudinary_secure_url: snapshot.cloudinarySecureUrl || null,
+        image_uploaded_at: snapshot.imageUploadedAt || null,
+        image_original_filename: snapshot.imageOriginalFilename || null,
         generate_text: true,
       }
       const res = await createObservation(payload)
+      const narrative =
+        String(res.generated_observation || '').trim() || String(res.manually_written_observation || '').trim() || ''
       patchById(targetId, (prev) => ({
         ...prev,
         saving: false,
         record: res,
         dirty: false,
         aiDraft: {
-          observation: res.generated_observation || '',
+          observation: narrative,
           recommendation: res.generated_recommendation || '',
         },
       }))
       setShowDraftReveal(true)
       setTimeout(() => setShowDraftReveal(false), 1200)
-      setReportNotice(`Observation #${res.id} saved. Continue to next image.`)
+      const extras = []
+      extras.push(`Observation #${res.id} saved. You can continue to the next image.`)
+      if (res.notice) extras.push(res.notice)
+      setReportNotice(extras.join(' '))
       jumpToNextIncomplete(targetId)
     } catch (e) {
       patchById(targetId, (prev) => ({ ...prev, saving: false }))
@@ -336,6 +516,21 @@ export function WorkspacePage() {
           <div className="mb-3 flex items-center justify-between px-1">
             <p className="text-[13px] font-medium text-[#6e6e73]">Image workspace</p>
             <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={resetWorkspaceSession}
+                disabled={resetBusy}
+                className={[
+                  'inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-[12px] font-medium tracking-[0.01em] transition-all duration-200',
+                  'border-black/[0.09] bg-white/82 text-[#444] shadow-[0_8px_20px_-16px_rgb(0,0,0,0.45)] backdrop-blur-sm',
+                  'hover:border-black/[0.18] hover:bg-white hover:text-[#111] hover:shadow-[0_14px_24px_-18px_rgb(0,0,0,0.5)]',
+                  'disabled:cursor-not-allowed disabled:opacity-55',
+                ].join(' ')}
+                title="Clear local workspace draft session"
+              >
+                <Eraser className="h-3.5 w-3.5" />
+                {resetBusy ? 'Resetting…' : 'Reset Session'}
+              </button>
               <ButtonSecondary className="gap-1.5 px-4 py-2.5 text-[13px]" onClick={pickForActive}>
                 <ImageUp className="h-3.5 w-3.5 opacity-75" />
                 Add Photos
@@ -355,6 +550,8 @@ export function WorkspacePage() {
                     key={`${activeId}:${activePreviewSrc}`}
                     src={activePreviewSrc}
                     alt=""
+                    loading="eager"
+                    decoding="async"
                     initial={{ opacity: 0.35 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0.2 }}
@@ -396,9 +593,32 @@ export function WorkspacePage() {
               </button>
             )}
             {active?.uploading ? (
-              <div className="absolute right-3 top-3 inline-flex items-center gap-2 rounded-full bg-white/85 px-3 py-1.5 text-[12px] text-[#111] ring-1 ring-black/[0.06]">
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                Uploading
+              <div className="absolute right-3 top-3 inline-flex items-center gap-2 rounded-full bg-white/90 px-3 py-1.5 text-[12px] font-medium text-[#111] shadow-[0_4px_18px_-10px_rgb(0,0,0,0.35)] ring-1 ring-black/[0.05] backdrop-blur-md">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin text-[#0071e3]" />
+                Uploading{' '}
+                <span className="tabular-nums text-[#6e6e73]">{Math.max(active.uploadProgress ?? 0, 0)}%</span>
+              </div>
+            ) : active?.uploadStatus === 'success' && active.imagePath?.startsWith?.('https') ? (
+              <div className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/92 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-white shadow-[0_4px_18px_-10px_rgb(16,120,72,0.55)] backdrop-blur-sm">
+                <CloudCheck className="h-3.5 w-3.5" strokeWidth={2.25} />
+                Synced
+              </div>
+            ) : active?.uploadStatus === 'error' ? (
+              <button
+                type="button"
+                onClick={() => retryUploadFor(activeId)}
+                className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-[#111]/92 px-3 py-1.5 text-[12px] font-medium text-white shadow-lg ring-1 ring-white/10 backdrop-blur-sm transition hover:bg-black"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Retry
+              </button>
+            ) : null}
+            {active?.uploading ? (
+              <div className="pointer-events-none absolute inset-x-5 bottom-3 h-[3px] overflow-hidden rounded-full bg-black/[0.06]">
+                <div
+                  className="h-full rounded-full bg-[#0071e3]/85 transition-[width] duration-150 ease-out"
+                  style={{ width: `${Math.max(8, Math.min(100, active.uploadProgress ?? 0))}%` }}
+                />
               </div>
             ) : null}
           </div>
@@ -419,7 +639,42 @@ export function WorkspacePage() {
                 ].join(' ')}
               >
                 {item.previewSrc ? (
-                  <img src={item.previewSrc} alt="" className="h-full w-full object-cover" />
+                  <>
+                    <img
+                      src={item.previewSrc}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className={[
+                        'h-full w-full object-cover transition duration-300 ease-out',
+                        item.uploadStatus === 'uploading' ? 'opacity-45' : 'opacity-100',
+                      ].join(' ')}
+                      onLoad={(e) => {
+                        const el = e.currentTarget
+                        el.style.opacity = '1'
+                      }}
+                    />
+                    {item.uploadStatus === 'error' ? (
+                      <span className="absolute inset-0 flex items-center justify-center bg-black/[0.32] backdrop-blur-[1px]" aria-hidden />
+                    ) : null}
+                    {item.uploadStatus === 'error' ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          retryUploadFor(item.id)
+                        }}
+                        title="Retry upload"
+                        aria-label={`Retry upload for ${item.imageOriginalFilename ?? 'image'}`}
+                        className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center rounded-full bg-white/95 p-2 text-[#111] shadow-lg ring-1 ring-black/[0.08] transition hover:scale-[1.04]"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                      </button>
+                    ) : item.uploadStatus === 'success' && item.imagePath?.startsWith('https') ? (
+                      <CloudCheck className="pointer-events-none absolute bottom-1 left-1 h-4 w-4 text-emerald-500 drop-shadow" strokeWidth={2.35} aria-hidden />
+                    ) : null}
+                  </>
                 ) : (
                   <span className="flex h-full w-full items-center justify-center bg-[#f1f2f5] text-[11px] text-[#6e6e73]">
                     No image
@@ -511,7 +766,13 @@ export function WorkspacePage() {
             </AnimatePresence>
 
             <div className="rounded-2xl bg-white/65 p-3 ring-1 ring-black/[0.05]">
-              <p className="text-[12px] uppercase tracking-[0.08em] text-[#6e6e73]">Generated Observation</p>
+              <p className="text-[12px] uppercase tracking-[0.08em] text-[#6e6e73]">Observation text</p>
+              {active?.record &&
+              ['unavailable', 'failed', 'skipped'].includes(String(active.record.ai_status || '').toLowerCase()) ? (
+                <p className="mt-1 text-[11px] leading-snug text-[#6e6e73]">
+                  AI drafting is off or unreachable—your fields and attachments still export normally.
+                </p>
+              ) : null}
               {active?.record ? (
                 <motion.div
                   key={`${active.record.id}-${showDraftReveal}`}
@@ -520,9 +781,18 @@ export function WorkspacePage() {
                   transition={{ duration: 0.32 }}
                   className="mt-3 space-y-3 text-[13px] text-[#6e6e73]"
                 >
-                  <p className="line-clamp-4 whitespace-pre-wrap">{active.aiDraft?.observation || active.record.generated_observation || '—'}</p>
+                  <p className="line-clamp-4 whitespace-pre-wrap">
+                    {(
+                      active.aiDraft?.observation ||
+                      active.record.generated_observation ||
+                      active.record.manually_written_observation ||
+                      ''
+                    ).trim() || '—'}
+                  </p>
                   <div className="h-px bg-black/[0.07]" />
-                  <p className="line-clamp-4 whitespace-pre-wrap">{active.aiDraft?.recommendation || active.record.generated_recommendation || '—'}</p>
+                  <p className="line-clamp-4 whitespace-pre-wrap">
+                    {(active.aiDraft?.recommendation || active.record.generated_recommendation || '').trim() || '—'}
+                  </p>
                 </motion.div>
               ) : (
                 <div
