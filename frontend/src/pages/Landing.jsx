@@ -121,7 +121,7 @@ export function LandingPage() {
             style={{ x: panelShiftX, y: panelShiftY }}
             animate={{ y: [0, -4, 0], rotate: [0, 0.12, 0] }}
             transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
-            className="absolute right-0 top-4 w-[620px] rounded-[34px] border border-white/40 bg-white/26 p-4 shadow-[0_35px_80px_-42px_rgba(0,0,0,0.5)] backdrop-blur-[22px]"
+            className="absolute right-0 top-30 w-[620px] rounded-[34px] border border-white/40 bg-white/26 p-4 shadow-[0_35px_80px_-42px_rgba(0,0,0,0.5)] backdrop-blur-[22px]"
           >
             <div className="absolute inset-x-14 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.88),transparent)]" />
 
