@@ -39,6 +39,13 @@ async function saveSession(row) {
   await withStore('readwrite', (s) => s.put(row))
 }
 
+function assertSessionPayload(session) {
+  if (!session || typeof session !== 'object' || !session.session_id) {
+    throw new Error('Upload session initialization failed. Please retry image upload.')
+  }
+  return session
+}
+
 export async function listUploadSessions() {
   return withStore('readonly', (s) => new Promise((resolve, reject) => {
     const req = s.getAll()
@@ -58,18 +65,18 @@ export async function uploadResumableFile(file, options = {}) {
 
   let session
   if (!local?.sessionId) {
-    session = await apiFetch('/upload/sessions', {
+    session = assertSessionPayload(await apiFetch('/upload/sessions', {
       method: 'POST',
       body: JSON.stringify({
         filename: file.name,
         content_type: file.type || 'application/octet-stream',
         total_size: file.size,
       }),
-    })
+    }))
     local = { id: sessionKey, sessionId: session.session_id, uploadedBytes: 0, file }
     await saveSession(local)
   } else {
-    session = await apiFetch(`/upload/sessions/${encodeURIComponent(local.sessionId)}`)
+    session = assertSessionPayload(await apiFetch(`/upload/sessions/${encodeURIComponent(local.sessionId)}`))
     local.uploadedBytes = session.uploaded_bytes || 0
     local.file = file
     await saveSession(local)
