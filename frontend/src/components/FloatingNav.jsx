@@ -24,6 +24,9 @@ export function FloatingNav() {
             {to === '/output/reports' ? (
               <span className="hidden px-2 text-[10px] uppercase tracking-[0.12em] text-[#6e6e73] lg:inline">Output</span>
             ) : null}
+            {to === '/ops/monitor' ? (
+              <span className="hidden px-2 text-[10px] uppercase tracking-[0.12em] text-[#6e6e73] lg:inline">Monitor</span>
+            ) : null}
             <NavLink
               to={to}
               end={end}

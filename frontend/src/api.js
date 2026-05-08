@@ -337,6 +337,10 @@ export function getOpsJobs() {
   return apiFetch('/ops/jobs', { dedupeKey: 'opsJobs' })
 }
 
+export function getOpsOverview() {
+  return apiFetch('/ops/overview', { dedupeKey: 'opsOverview' })
+}
+
 executors.createObservation = (payload) =>
   apiFetch('/observations', { method: 'POST', body: JSON.stringify(payload) })
 executors.updateObservation = ({ id, payload }) =>

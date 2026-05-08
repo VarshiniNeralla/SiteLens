@@ -44,6 +44,7 @@ import {
 } from '../constants/observationFormOptions.js'
 
 const TOAST_TIMEOUT_MS = 2000
+const HIDDEN_PROJECT_NAMES = new Set(['Chaos Project'])
 
 function SeverityBadge({ severity }) {
   const tone =
@@ -100,6 +101,28 @@ export function ReportsPage() {
   const [operationBanner, setOperationBanner] = useState('')
   const [reportPage, setReportPage] = useState(1)
   const REPORT_PAGE_SIZE = 24
+
+  const observationsView = useMemo(
+    () => observations.filter((o) => !HIDDEN_PROJECT_NAMES.has(String(o.project_name || '').trim())),
+    [observations],
+  )
+  const hiddenObservationIds = useMemo(
+    () => new Set(observations.filter((o) => HIDDEN_PROJECT_NAMES.has(String(o.project_name || '').trim())).map((o) => o.id)),
+    [observations],
+  )
+  const reportsView = useMemo(
+    () =>
+      reports.filter((r) => {
+        if (typeof r.title === 'string' && /chaos project/i.test(r.title)) return false
+        if (Array.isArray(r.observation_ids)) {
+          for (const id of r.observation_ids) {
+            if (hiddenObservationIds.has(id)) return false
+          }
+        }
+        return true
+      }),
+    [reports, hiddenObservationIds],
+  )
 
   const load = async () => {
     const rid = ++latestLoadRef.current
@@ -158,15 +181,15 @@ export function ReportsPage() {
     return () => clearTimeout(id)
   }, [notice])
 
-  const selectedRows = useMemo(() => observations.filter((o) => selected.has(o.id)), [observations, selected])
+  const selectedRows = useMemo(() => observationsView.filter((o) => selected.has(o.id)), [observationsView, selected])
   const queueProjects = useMemo(
-    () => Array.from(new Set(observations.map((o) => o.project_name).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
-    [observations],
+    () => Array.from(new Set(observationsView.map((o) => o.project_name).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [observationsView],
   )
   const queueRows = useMemo(() => {
     const base = queueProjectFilter === 'all'
-      ? observations
-      : observations.filter((o) => o.project_name === queueProjectFilter)
+      ? observationsView
+      : observationsView.filter((o) => o.project_name === queueProjectFilter)
     const rows = [...base]
     rows.sort((a, b) => {
       const cmp = (a.project_name || '').localeCompare(b.project_name || '')
@@ -174,19 +197,19 @@ export function ReportsPage() {
       return b.id - a.id
     })
     return rows
-  }, [observations, queueProjectFilter, queueSortAsc])
+  }, [observationsView, queueProjectFilter, queueSortAsc])
   const queueTotalPages = Math.max(1, Math.ceil(queueRows.length / QUEUE_PAGE_SIZE))
   const currentQueuePage = Math.min(queuePage, queueTotalPages)
   const pagedObservations = useMemo(() => {
     const start = (currentQueuePage - 1) * QUEUE_PAGE_SIZE
     return queueRows.slice(start, start + QUEUE_PAGE_SIZE)
   }, [queueRows, currentQueuePage])
-  const reportTotalPages = Math.max(1, Math.ceil(reports.length / REPORT_PAGE_SIZE))
+  const reportTotalPages = Math.max(1, Math.ceil(reportsView.length / REPORT_PAGE_SIZE))
   const currentReportPage = Math.min(reportPage, reportTotalPages)
   const pagedReports = useMemo(() => {
     const start = (currentReportPage - 1) * REPORT_PAGE_SIZE
-    return reports.slice(start, start + REPORT_PAGE_SIZE)
-  }, [reports, currentReportPage])
+    return reportsView.slice(start, start + REPORT_PAGE_SIZE)
+  }, [reportsView, currentReportPage])
   const sameProject = useMemo(
     () => selectedRows.length > 0 && new Set(selectedRows.map((o) => o.project_name)).size === 1,
     [selectedRows],
@@ -224,7 +247,7 @@ export function ReportsPage() {
   }
 
   const selectAllReports = () => {
-    setSelectedReportIds(new Set(reports.map((r) => r.id)))
+    setSelectedReportIds(new Set(reportsView.map((r) => r.id)))
   }
 
   const deselectAllReports = () => {
@@ -647,7 +670,7 @@ export function ReportsPage() {
               </div>
             ) : null}
           </div>
-          {!loading && observations.length > QUEUE_PAGE_SIZE ? (
+          {!loading && observationsView.length > QUEUE_PAGE_SIZE ? (
             <div className="mt-3 flex items-center justify-between px-1">
               <p className="text-[12px] text-[#6e6e73]">
                 Page {currentQueuePage} of {queueTotalPages}
@@ -724,7 +747,7 @@ export function ReportsPage() {
         <div className="flex items-center justify-between">
           <h3 className="text-[16px] font-semibold tracking-tight text-[#111]">Recent decks</h3>
           <div className="flex items-center gap-2">
-            <span className="text-[12px] text-[#6e6e73]">{reports.length} total</span>
+            <span className="text-[12px] text-[#6e6e73]">{reportsView.length} total</span>
             <span className="text-[12px] text-[#6e6e73]">{selectedReportIds.size} selected</span>
             <motion.div
               initial={{ opacity: 0, y: -3 }}
@@ -776,7 +799,7 @@ export function ReportsPage() {
               <Skeleton key={i} className="h-44 rounded-3xl" />
             ))}
           </div>
-        ) : reports.length ? (
+        ) : reportsView.length ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {pagedReports.map((r) => (
               <motion.article
@@ -864,7 +887,7 @@ export function ReportsPage() {
                     onClick={async () => {
                       try {
                         const full = await getReport(r.id)
-                        const first = observations.find((o) => o.id === full.observation_ids[0])
+                        const first = observationsView.find((o) => o.id === full.observation_ids[0])
                         if (first) setEditingObs(first)
                       } catch {
                         setError('Could not open deck preview context')
@@ -885,7 +908,7 @@ export function ReportsPage() {
             <p className="mt-1 text-[13px] text-[#6e6e73]">Select observations in the queue and generate your first deck.</p>
           </div>
         )}
-        {!loading && reports.length > REPORT_PAGE_SIZE ? (
+        {!loading && reportsView.length > REPORT_PAGE_SIZE ? (
           <div className="mt-3 flex items-center justify-between px-1">
             <p className="text-[12px] text-[#6e6e73]">
               Deck page {currentReportPage} of {reportTotalPages}

@@ -1,4 +1,5 @@
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -45,6 +46,7 @@ Severity levels:
 def _chat(messages: list[dict[str, str]]) -> str:
     if not _BREAKER.allow():
         raise RuntimeError("AI service temporarily unavailable (circuit open)")
+    started = time.perf_counter()
     try:
         mode = faults.apply("llm")
         if mode == "outage":
@@ -69,9 +71,9 @@ def _chat(messages: list[dict[str, str]]) -> str:
                 )
             r.raise_for_status()
             data = r.json()
-        _BREAKER.record_success()
+        _BREAKER.record_success(latency_ms=(time.perf_counter() - started) * 1000.0, retries=0)
     except Exception:
-        _BREAKER.record_failure()
+        _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0, retries=0)
         raise
     try:
         return str(data["choices"][0]["message"]["content"]).strip()
@@ -109,6 +111,7 @@ def _chat_with_maybe_image(*, text_prompt: str, image_url: str | None) -> str:
         "temperature": 0.2,
     }
     try:
+        started = time.perf_counter()
         mode = faults.apply("llm")
         if mode == "outage":
             raise RuntimeError("Injected LLM outage")
@@ -123,10 +126,10 @@ def _chat_with_maybe_image(*, text_prompt: str, image_url: str | None) -> str:
                 logger.warning("Multimodal draft HTTP %s; falling back to text-only", r.status_code)
                 r.raise_for_status()
             data = r.json()
-        _BREAKER.record_success()
+        _BREAKER.record_success(latency_ms=(time.perf_counter() - started) * 1000.0, retries=0)
         return str(data["choices"][0]["message"]["content"]).strip()
     except Exception as exc:  # noqa: BLE001
-        _BREAKER.record_failure()
+        _BREAKER.record_failure(retries=1)
         logger.info("Multimodal draft unavailable (%s); retrying text-only.", exc)
         return _chat(
             [

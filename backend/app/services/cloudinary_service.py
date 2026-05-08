@@ -82,6 +82,7 @@ def upload_image_bytes(file_bytes: bytes, original_filename: str) -> dict[str, A
     last_err: BaseException | None = None
 
     for attempt in range(1, _MAX_UPLOAD_RETRIES + 1):
+        started = time.perf_counter()
         try:
             bio = BytesIO(file_bytes)
             bio.seek(0)
@@ -101,7 +102,8 @@ def upload_image_bytes(file_bytes: bytes, original_filename: str) -> dict[str, A
 
             optimized = build_optimized_url(public_id)
             logger.info("Cloudinary upload OK public_id=%s attempt=%s", public_id, attempt)
-            _BREAKER.record_success()
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            _BREAKER.record_success(latency_ms=elapsed_ms, retries=attempt - 1)
             return {
                 "public_id": public_id,
                 "secure_url": secure_url,
@@ -112,7 +114,8 @@ def upload_image_bytes(file_bytes: bytes, original_filename: str) -> dict[str, A
             }
         except BaseException as e:  # noqa: BLE001 — Cloudinary/network surface
             last_err = e
-            _BREAKER.record_failure()
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            _BREAKER.record_failure(latency_ms=elapsed_ms, retries=max(0, attempt - 1))
             logger.warning("Cloudinary upload attempt %s failed: %s", attempt, e)
             if attempt < _MAX_UPLOAD_RETRIES:
                 time.sleep(_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))

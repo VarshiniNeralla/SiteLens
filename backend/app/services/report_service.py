@@ -1,4 +1,5 @@
 import re
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -83,11 +84,12 @@ def process_report_generation(
     *,
     report_id: int,
 ) -> ReportOut:
+    started = time.perf_counter()
     if not _EXPORT_BREAKER.allow():
         raise ValueError("Export service temporarily unavailable (circuit open)")
     mode = faults.apply("export")
     if mode == "outage":
-        _EXPORT_BREAKER.record_failure()
+        _EXPORT_BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0)
         raise ValueError("Injected export outage")
     report = store.get_report(report_id)
     if report is None:
@@ -173,10 +175,10 @@ def process_report_generation(
             include_pdf=processing.include_pdf,
         )
         store.upsert_report(updated)
-        _EXPORT_BREAKER.record_success()
+        _EXPORT_BREAKER.record_success(latency_ms=(time.perf_counter() - started) * 1000.0)
         return _report_to_out(updated)
     except Exception as e:  # noqa: BLE001
-        _EXPORT_BREAKER.record_failure()
+        _EXPORT_BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0)
         logger.exception("Report generation failed: %s", e)
         failed = ReportRecord(
             id=processing.id,

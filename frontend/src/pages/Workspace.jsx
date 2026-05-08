@@ -35,6 +35,14 @@ const REQUIRED_KEYS = ['project_name', 'tower', 'floor', 'flat', 'room', 'observ
 const TOAST_TIMEOUT_MS = 2000
 const REPORT_READY_TOAST_TIMEOUT_MS = 7000
 const WORKSPACE_DRAFTS_KEY = 'sitelens.workspace.v1'
+const WORKSPACE_PERSIST_DEBOUNCE_MS = 220
+
+const workspaceMemoryCache = {
+  items: null,
+  activeId: null,
+  expandedAdvanced: false,
+  detailsScrollTop: 0,
+}
 
 const emptyForm = () => ({
   project_name: '',
@@ -100,6 +108,7 @@ function toStaticImageSrc(imagePath) {
 function serializeDraft(item) {
   return {
     id: item.id,
+    localUrl: item.localUrl,
     imagePath: item.imagePath,
     cloudinaryPublicId: item.cloudinaryPublicId,
     cloudinarySecureUrl: item.cloudinarySecureUrl,
@@ -120,6 +129,7 @@ function deserializeDraft(raw) {
   return {
     ...base,
     id: Number(raw?.id) || base.id,
+    localUrl: typeof raw?.localUrl === 'string' ? raw.localUrl : '',
     imagePath: typeof raw?.imagePath === 'string' ? raw.imagePath : '',
     cloudinaryPublicId: typeof raw?.cloudinaryPublicId === 'string' ? raw.cloudinaryPublicId : '',
     cloudinarySecureUrl: typeof raw?.cloudinarySecureUrl === 'string' ? raw.cloudinarySecureUrl : '',
@@ -139,13 +149,14 @@ export function WorkspacePage() {
   const navigate = useNavigate()
   const inputRef = useRef(null)
   const detailsPanelRef = useRef(null)
+  const detailsScrollRef = useRef(null)
   const pendingUploadForId = useRef(1)
   const localUrlRegistry = useRef(new Set())
   const itemsRef = useRef(null)
   const nextId = useRef(2)
-  const [items, setItems] = useState([createDraft(1)])
-  const [activeId, setActiveId] = useState(1)
-  const [expandedAdvanced, setExpandedAdvanced] = useState(false)
+  const [items, setItems] = useState(() => workspaceMemoryCache.items || [createDraft(1)])
+  const [activeId, setActiveId] = useState(() => workspaceMemoryCache.activeId || 1)
+  const [expandedAdvanced, setExpandedAdvanced] = useState(() => Boolean(workspaceMemoryCache.expandedAdvanced))
   const [globalError, setGlobalError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
   const [reportBusy, setReportBusy] = useState(false)
@@ -156,6 +167,7 @@ export function WorkspacePage() {
   const [imageLoadState, setImageLoadState] = useState({})
   const [resetBusy, setResetBusy] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState(null)
+  const [persistenceNotice, setPersistenceNotice] = useState('')
 
   useEffect(() => {
     itemsRef.current = items
@@ -188,15 +200,14 @@ export function WorkspacePage() {
   const hasNext = activeIndex >= 0 && activeIndex < enrichedItems.length - 1
 
   useEffect(() => {
-    const registry = localUrlRegistry.current
-    return () => {
-      for (const url of registry) URL.revokeObjectURL(url)
-      registry.clear()
-    }
+    // Keep in-session blob previews stable while navigating between tabs/routes.
+    // URLs are still revoked on explicit replace/remove/reset flows.
+    return undefined
   }, [])
 
   useEffect(() => {
     try {
+      if (workspaceMemoryCache.items?.length) return
       const raw = localStorage.getItem(WORKSPACE_DRAFTS_KEY)
       if (!raw) return
       const parsed = JSON.parse(raw)
@@ -206,23 +217,42 @@ export function WorkspacePage() {
       setActiveId(Number(parsed?.activeId) || rows[0].id)
       setExpandedAdvanced(Boolean(parsed?.expandedAdvanced))
       nextId.current = Math.max(...rows.map((x) => Number(x.id) || 0), 0) + 1
+      workspaceMemoryCache.items = rows
+      workspaceMemoryCache.activeId = Number(parsed?.activeId) || rows[0].id
+      workspaceMemoryCache.expandedAdvanced = Boolean(parsed?.expandedAdvanced)
+      workspaceMemoryCache.detailsScrollTop = Number(parsed?.detailsScrollTop) || 0
+      setPersistenceNotice('Restored previous session')
     } catch {
       // Ignore malformed local cache; workspace falls back to default draft.
     }
   }, [])
 
   useEffect(() => {
-    try {
-      const payload = {
-        activeId,
-        expandedAdvanced,
-        items: items.map(serializeDraft),
+    const id = window.setTimeout(() => {
+      try {
+        workspaceMemoryCache.items = items
+        workspaceMemoryCache.activeId = activeId
+        workspaceMemoryCache.expandedAdvanced = expandedAdvanced
+        const payload = {
+          activeId,
+          expandedAdvanced,
+          detailsScrollTop: workspaceMemoryCache.detailsScrollTop || 0,
+          items: items.map(serializeDraft),
+        }
+        localStorage.setItem(WORKSPACE_DRAFTS_KEY, JSON.stringify(payload))
+        if (!reportBusy) setPersistenceNotice('All changes saved')
+      } catch {
+        // Ignore storage quota/errors; app still works in-memory.
       }
-      localStorage.setItem(WORKSPACE_DRAFTS_KEY, JSON.stringify(payload))
-    } catch {
-      // Ignore storage quota/errors; app still works in-memory.
-    }
-  }, [items, activeId, expandedAdvanced])
+    }, WORKSPACE_PERSIST_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [items, activeId, expandedAdvanced, reportBusy])
+
+  useEffect(() => {
+    if (!persistenceNotice) return undefined
+    const id = setTimeout(() => setPersistenceNotice(''), TOAST_TIMEOUT_MS)
+    return () => clearTimeout(id)
+  }, [persistenceNotice])
 
   useEffect(() => {
     if (!globalError) return undefined
@@ -268,6 +298,19 @@ export function WorkspacePage() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [items, reportBusy])
 
+  useEffect(() => {
+    const node = detailsScrollRef.current
+    if (!node) return
+    if (workspaceMemoryCache.detailsScrollTop > 0) {
+      node.scrollTop = workspaceMemoryCache.detailsScrollTop
+    }
+    const onScroll = () => {
+      workspaceMemoryCache.detailsScrollTop = node.scrollTop
+    }
+    node.addEventListener('scroll', onScroll, { passive: true })
+    return () => node.removeEventListener('scroll', onScroll)
+  }, [])
+
   const patchById = (id, mutator) => {
     setItems((prev) => updateById(prev, id, mutator))
   }
@@ -284,10 +327,11 @@ export function WorkspacePage() {
     })
   }
 
-  const setActiveAndFocus = (targetId) => {
+  const setActiveAndFocus = (targetId, options = {}) => {
+    const { focus = false } = options
     setActiveId(targetId)
     setFieldErrors({})
-    focusObservationForm()
+    if (focus) focusObservationForm()
   }
 
   const pickFor = (id) => {
@@ -360,6 +404,10 @@ export function WorkspacePage() {
       for (const url of registry) URL.revokeObjectURL(url)
       registry.clear()
       localStorage.removeItem(WORKSPACE_DRAFTS_KEY)
+      workspaceMemoryCache.items = [createDraft(1)]
+      workspaceMemoryCache.activeId = 1
+      workspaceMemoryCache.expandedAdvanced = false
+      workspaceMemoryCache.detailsScrollTop = 0
       nextId.current = 2
       pendingUploadForId.current = 1
       setItems([createDraft(1)])
@@ -370,6 +418,7 @@ export function WorkspacePage() {
       setReportNotice('Workspace session reset.')
       setReportReadyToast(null)
       setImageLoadState({})
+      setPersistenceNotice('Draft cleared')
     } finally {
       setResetBusy(false)
     }
@@ -633,10 +682,18 @@ export function WorkspacePage() {
                 <Eraser className="h-3.5 w-3.5" />
                 {resetBusy ? 'Resetting…' : 'Reset Session'}
               </button>
-              <ButtonSecondary className="gap-1.5 px-4 py-2.5 text-[13px]" onClick={addPhotoAdaptive}>
-                <ImageUp className="h-3.5 w-3.5 opacity-75" />
+              <button
+                type="button"
+                onClick={addPhotoAdaptive}
+                className={[
+                  'inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-[12px] font-medium tracking-[0.01em] transition-all duration-200',
+                  'border-black/[0.09] bg-white/82 text-[#444] shadow-[0_8px_20px_-16px_rgb(0,0,0,0.45)] backdrop-blur-sm',
+                  'hover:border-black/[0.18] hover:bg-white hover:text-[#111] hover:shadow-[0_14px_24px_-18px_rgb(0,0,0,0.5)]',
+                ].join(' ')}
+              >
+                <ImageUp className="h-3.5 w-3.5" />
                 {hasAnyUploaded ? 'Add More Photos' : 'Add Photo'}
-              </ButtonSecondary>
+              </button>
             </div>
           </div>
 
@@ -724,20 +781,28 @@ export function WorkspacePage() {
           <div className="mt-3 flex gap-2 overflow-x-auto rounded-2xl bg-white/45 p-2 ring-1 ring-black/[0.04]">
             <AnimatePresence initial={false}>
               {enrichedItems.map((item) => (
-                <motion.button
+                <motion.div
                   layout
                   key={item.id}
-                  type="button"
                   initial={{ opacity: 0, scale: 0.96, y: 4 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.96, y: 6 }}
                   transition={{ duration: 0.18 }}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setActiveAndFocus(item.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setActiveAndFocus(item.id)
+                    }
+                  }}
                   className={[
                     'group relative h-16 w-24 shrink-0 overflow-hidden rounded-xl ring-1 transition-all duration-200',
                     item.id === activeId
                       ? 'scale-[1.02] ring-black/[0.18]'
                       : 'ring-black/[0.08] hover:-translate-y-0.5 hover:ring-black/[0.18]',
+                    'cursor-pointer',
                   ].join(' ')}
                 >
                   {item.previewSrc ? (
@@ -819,7 +884,7 @@ export function WorkspacePage() {
                       #{item.record.id}
                     </span>
                   ) : null}
-                </motion.button>
+                </motion.div>
               ))}
             </AnimatePresence>
             {!enrichedItems.length ? (
@@ -838,9 +903,10 @@ export function WorkspacePage() {
             {activeOperation.state !== 'idle' ? (
               <p className="mt-1 text-[12px] font-medium text-[#0071e3]">{activeOperation.label}</p>
             ) : null}
+            {persistenceNotice ? <p className="mt-1 text-[12px] font-medium text-[#6e6e73]">{persistenceNotice}</p> : null}
           </div>
 
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-[5.25rem] pr-1">
+          <div ref={detailsScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-[5.25rem] pr-1">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormSelect neutralFocus id="project_name" label="Project" value={active?.form.project_name ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, project_name: v }, dirty: true }))} options={PROJECT_NAMES} placeholder="Select" error={fieldErrors.project_name} />
               <FormSelect neutralFocus id="tower" label="Tower" value={active?.form.tower ?? ''} onChange={(v) => patchActive((p) => ({ ...p, form: { ...p.form, tower: v }, dirty: true }))} options={TOWERS} placeholder="Select" error={fieldErrors.tower} />

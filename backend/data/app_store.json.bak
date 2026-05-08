@@ -6,8 +6,8 @@
     "Chaos Project": 4
   },
   "project_seq": 4,
-  "observation_seq": 43,
-  "report_seq": 31,
+  "observation_seq": 45,
+  "report_seq": 35,
   "observations": {
     "6": {
       "id": 6,
@@ -996,6 +996,58 @@
       "manually_written_observation": "",
       "ai_status": "unavailable",
       "ai_error": "AI service temporarily unavailable (circuit open)"
+    },
+    "44": {
+      "id": 44,
+      "project_id": 2,
+      "project_name": "Apas",
+      "tower": "T4",
+      "floor": "4",
+      "flat": "4",
+      "room": "Utility Area",
+      "observation_type": "Alignment Issue",
+      "severity": "Critical",
+      "site_visit_date": "2026-05-08",
+      "slab_casting_date": "2026-04-28",
+      "inspection_status": "Yet to be Confirmed",
+      "third_party_status": "Yet to be Confirmed",
+      "image_path": "https://res.cloudinary.com/drss9dlda/image/upload/f_auto,q_auto/v1/SiteLens/whrtpnmskaqdw8wqkbgq",
+      "generated_observation": "Critical alignment deviation observed in the utility area of Tower T4, Floor 4, Flat 4. The verticality of the structural elements appears compromised, with significant misalignment of the supporting props and structural members. This condition poses a risk to the structural integrity and load distribution of the slab cast on 2026-04-28.",
+      "generated_recommendation": "Immediately halt further loading in the affected area. Conduct a comprehensive verticality survey and structural stability assessment. Implement corrective measures to realign structural elements or provide additional shoring as per the structural engineer's approved rectification plan.",
+      "created_at": "2026-05-08T09:12:56.329541+00:00",
+      "cloudinary_public_id": "SiteLens/whrtpnmskaqdw8wqkbgq",
+      "cloudinary_secure_url": "https://res.cloudinary.com/drss9dlda/image/upload/v1778231553/SiteLens/whrtpnmskaqdw8wqkbgq.jpg",
+      "image_uploaded_at": "2026-05-08T09:12:34.077100+00:00",
+      "image_original_filename": "15.jpeg",
+      "manually_written_observation": "",
+      "ai_status": "completed",
+      "ai_error": null
+    },
+    "45": {
+      "id": 45,
+      "project_id": 3,
+      "project_name": "Udyan",
+      "tower": "T6",
+      "floor": "6",
+      "flat": "4",
+      "room": "Terrace",
+      "observation_type": "Leakage",
+      "severity": "Major",
+      "site_visit_date": "2026-05-05",
+      "slab_casting_date": "2026-04-28",
+      "inspection_status": "Yet to be Confirmed",
+      "third_party_status": "Yet to be Confirmed",
+      "image_path": "https://res.cloudinary.com/drss9dlda/image/upload/f_auto,q_auto/v1/SiteLens/llgldlob8idpi5zbfokj",
+      "generated_observation": "Active leakage observed at the terrace slab of Tower T6, Floor 6, Flat 4. The issue is noted within eight days of the slab casting date (2026-04-28).",
+      "generated_recommendation": "Conduct a thorough investigation to identify the source of ingress. Implement necessary waterproofing rectification and perform a water ponding test to verify the integrity of the slab before proceeding with further finishes.",
+      "created_at": "2026-05-08T09:43:27.862765+00:00",
+      "cloudinary_public_id": "SiteLens/llgldlob8idpi5zbfokj",
+      "cloudinary_secure_url": "https://res.cloudinary.com/drss9dlda/image/upload/v1778232771/SiteLens/llgldlob8idpi5zbfokj.jpg",
+      "image_uploaded_at": "2026-05-08T09:32:51.744836+00:00",
+      "image_original_filename": "16.jpeg",
+      "manually_written_observation": "",
+      "ai_status": "completed",
+      "ai_error": null
     }
   },
   "reports": {
@@ -1058,10 +1110,10 @@
       "id": 31,
       "project_id": 4,
       "title": "Chaos Deck",
-      "status": "processing",
-      "pptx_path": null,
+      "status": "ready",
+      "pptx_path": "C:\\ReportGen Agent\\backend\\reports\\Chaos Deck (3).pptx",
       "pdf_path": null,
-      "xlsx_path": null,
+      "xlsx_path": "C:\\ReportGen Agent\\backend\\reports\\SiteLens_Quality_Walkthrough_Chaos_Project (2).xlsx",
       "summary": "Executive summary unavailable (drafting unavailable). Export still includes structured fields and attachments for Chaos Project: 0 observation(s).",
       "error_message": null,
       "created_at": "2026-05-08T07:04:43.440988+00:00",
@@ -1074,6 +1126,70 @@
         29,
         30,
         31
+      ],
+      "include_pdf": false
+    },
+    "32": {
+      "id": 32,
+      "project_id": 2,
+      "title": "Quality walkthrough \u2014 Apas",
+      "status": "ready",
+      "pptx_path": "C:\\ReportGen Agent\\backend\\reports\\Quality walkthrough \u2014 Apas.pptx",
+      "pdf_path": null,
+      "xlsx_path": "C:\\ReportGen Agent\\backend\\reports\\SiteLens_Quality_Walkthrough_Apas.xlsx",
+      "summary": "Executive Summary:\n\nA critical alignment deviation was identified in the utility area of Tower T4, Floor 4, Flat 4. Structural elements exhibit significant misalignment of supporting props and members, compromising verticality. This condition poses a direct risk to the structural integrity and load distribution of the slab cast on 2026-04-28. Immediate corrective action and a structural stability assessment are required to mitigate potential failure.",
+      "error_message": null,
+      "created_at": "2026-05-08T09:13:05.300952+00:00",
+      "observation_ids": [
+        44
+      ],
+      "include_pdf": false
+    },
+    "33": {
+      "id": 33,
+      "project_id": 2,
+      "title": "Apas Critical",
+      "status": "ready",
+      "pptx_path": "C:\\ReportGen Agent\\backend\\reports\\Apas Critical.pptx",
+      "pdf_path": null,
+      "xlsx_path": "C:\\ReportGen Agent\\backend\\reports\\SiteLens_Quality_Walkthrough_Apas (2).xlsx",
+      "summary": "Executive Summary:\n\nA critical structural alignment deviation was identified in the utility area of Tower T4, Floor 4, Flat 4. Significant misalignment of supporting props and structural members has compromised verticality, posing a risk to the structural integrity and load distribution of the slab cast on 2026-04-28. Immediate corrective action and structural verification are required to ensure stability and safety.",
+      "error_message": null,
+      "created_at": "2026-05-08T09:13:18.997416+00:00",
+      "observation_ids": [
+        44
+      ],
+      "include_pdf": false
+    },
+    "34": {
+      "id": 34,
+      "project_id": 3,
+      "title": "Quality walkthrough \u2014 Udyan",
+      "status": "ready",
+      "pptx_path": "C:\\ReportGen Agent\\backend\\reports\\Quality walkthrough \u2014 Udyan.pptx",
+      "pdf_path": null,
+      "xlsx_path": "C:\\ReportGen Agent\\backend\\reports\\SiteLens_Quality_Walkthrough_Udyan.xlsx",
+      "summary": "Executive Summary:\n\nA quality walkthrough of Project Udyan identified a critical deficiency at Tower T6. Active leakage was observed at the terrace slab of Floor 6, Flat 4, occurring within eight days of the casting date (2026-04-28). Immediate investigation into the waterproofing integrity and slab curing process is required to determine the root cause and implement corrective measures.",
+      "error_message": null,
+      "created_at": "2026-05-08T09:43:34.673037+00:00",
+      "observation_ids": [
+        45
+      ],
+      "include_pdf": false
+    },
+    "35": {
+      "id": 35,
+      "project_id": 3,
+      "title": "Udyan Test",
+      "status": "processing",
+      "pptx_path": null,
+      "pdf_path": null,
+      "xlsx_path": null,
+      "summary": "Executive Summary:\n\nA quality walkthrough at Project Udyan identified a critical issue involving active leakage at the terrace slab of Tower T6, Floor 6, Flat 4. The leakage was observed within eight days of the slab casting date (2026-04-28). Immediate investigation into the waterproofing integrity and concrete curing process is required to determine the root cause and implement corrective measures.",
+      "error_message": null,
+      "created_at": "2026-05-08T09:46:47.633930+00:00",
+      "observation_ids": [
+        45
       ],
       "include_pdf": false
     }
