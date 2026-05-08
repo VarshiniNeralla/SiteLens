@@ -8,3 +8,4 @@ pydantic>=2.10.0
 pydantic-settings>=2.6.0
 openpyxl>=3.1.5
 cloudinary>=1.41.0
+motor>=3.6.0

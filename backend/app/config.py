@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     breaker_failure_threshold: int = 5
     breaker_window_seconds: int = 60
     breaker_cooldown_seconds: int = 45
+    mongodb_url: str = "mongodb://localhost:27017"
+    mongodb_db: str = "sitelens_prod"
+    mongodb_connect_timeout_ms: int = 8000
+    mongodb_server_selection_timeout_ms: int = 8000
+    mongodb_retry_attempts: int = 4
+    mongodb_retry_backoff_ms: int = 300
 
     @field_validator("ppt_template_path", mode="before")
     @classmethod

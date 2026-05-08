@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
+from typing import Awaitable, Callable
 from uuid import uuid4
 
 from app.config import settings
@@ -27,12 +26,13 @@ class JobState:
 
 class ReportJobManager:
     def __init__(self) -> None:
-        self._pool = ThreadPoolExecutor(max_workers=max(1, settings.report_worker_count))
+        import threading
+
+        self._semaphore = asyncio.Semaphore(max(1, settings.report_worker_count))
         self._lock = threading.Lock()
         self._jobs: dict[str, JobState] = {}
-        self._futures: dict[str, Future[None]] = {}
 
-    def submit(self, report_id: int, runner: Callable[[], None]) -> str:
+    async def submit(self, report_id: int, runner: Callable[[], Awaitable[None]], store: AppStore | None = None) -> str:
         job_id = uuid4().hex
         state = JobState(
             job_id=job_id,
@@ -43,13 +43,20 @@ class ReportJobManager:
         with self._lock:
             self._jobs[job_id] = state
 
-        def wrapped() -> None:
+        async def wrapped() -> None:
+            await self._semaphore.acquire()
             with self._lock:
                 current = self._jobs[job_id]
                 current.status = "processing"
                 current.started_at = datetime.utcnow()
+            if store is not None:
+                await store.jobs.update_one(
+                    {"job_id": job_id},
+                    {"$set": vars(current)},
+                    upsert=True,
+                )
             try:
-                runner()
+                await runner()
                 with self._lock:
                     current = self._jobs[job_id]
                     current.status = "completed"
@@ -61,10 +68,14 @@ class ReportJobManager:
                     current.status = "failed"
                     current.error = str(exc)
                     current.finished_at = datetime.utcnow()
+            finally:
+                if store is not None:
+                    await store.jobs.update_one({"job_id": job_id}, {"$set": vars(self._jobs[job_id])}, upsert=True)
+                self._semaphore.release()
 
-        fut = self._pool.submit(wrapped)
-        with self._lock:
-            self._futures[job_id] = fut
+        if store is not None:
+            await store.jobs.update_one({"job_id": job_id}, {"$set": vars(state)}, upsert=True)
+        asyncio.create_task(wrapped())
         return job_id
 
     def get(self, job_id: str) -> JobState | None:
@@ -75,12 +86,12 @@ class ReportJobManager:
         with self._lock:
             return list(self._jobs.values())
 
-    def recover_pending(self, store: AppStore, runner_factory: Callable[[int], Callable[[], None]]) -> int:
+    async def recover_pending(self, store: AppStore, runner_factory: Callable[[int], Callable[[], Awaitable[None]]]) -> int:
         recovered = 0
-        for report in store.list_reports_desc():
+        for report in await store.list_reports_desc(limit=2000):
             if report.status not in {"queued", "processing"}:
                 continue
-            self.submit(report.id, runner_factory(report.id))
+            await self.submit(report.id, runner_factory(report.id), store=store)
             recovered += 1
         return recovered
 

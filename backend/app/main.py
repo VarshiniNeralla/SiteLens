@@ -11,9 +11,11 @@ from starlette.responses import JSONResponse
 from app.api.routes import observations, ops, reports, upload
 from app.config import settings
 from app.logging_config import get_logger, setup_logging
+from app.services import cloudinary_service
 from app.services.report_jobs import job_manager
 from app.services.report_service import process_report_generation
-from app.store import get_store
+from app.store import MongoConnectionManager
+from app.services.upload_sessions import UploadSessionStore
 
 setup_logging()
 logger = get_logger(__name__)
@@ -24,15 +26,44 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    store = get_store()
-    recovered = job_manager.recover_pending(
+    mongo = MongoConnectionManager()
+    store = await mongo.connect()
+    app.state.mongo = mongo
+    app.state.store = store
+    app.state.upload_sessions = UploadSessionStore(store)
+    mongo_health = await store.mongo_health()
+    if mongo_health["status"] == "connected":
+        logger.info(
+            "MongoDB connected db=%s latency_ms=%s",
+            settings.mongodb_db,
+            mongo_health.get("latency_ms"),
+        )
+    else:
+        logger.warning(
+            "MongoDB degraded db=%s reason=%s",
+            settings.mongodb_db,
+            mongo_health.get("reason"),
+        )
+    cloudinary_health = cloudinary_service.startup_health()
+    if cloudinary_health["status"] == "connected":
+        logger.info(
+            "Cloudinary connected cloud_name=%s folder=%s",
+            cloudinary_health.get("cloud_name"),
+            cloudinary_health.get("folder"),
+        )
+    elif cloudinary_health["status"] == "disabled":
+        logger.info("Cloudinary disabled reason=%s", cloudinary_health.get("reason"))
+    else:
+        logger.warning("Cloudinary degraded reason=%s", cloudinary_health.get("reason"))
+    recovered = await job_manager.recover_pending(
         store,
         lambda report_id: (lambda: process_report_generation(store, report_id=report_id)),
     )
     if recovered:
         logger.info("Recovered %s pending report job(s) after restart", recovered)
-    logger.info("JSON datastore ready")
+    logger.info("Mongo datastore ready")
     yield
+    await mongo.close()
 
 
 app = FastAPI(

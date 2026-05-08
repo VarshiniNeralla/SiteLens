@@ -1,0 +1,63 @@
+Repository structure
+- Monorepo: Yes.
+- Current structure: `/frontend` and `/backend` in one git repository.
+- Separate repos: No.
+
+Backend framework
+- Confirmed: FastAPI + Uvicorn.
+- Evidence: `backend/requirements.txt` includes `fastapi` and `uvicorn[standard]`.
+
+Frontend framework
+- Confirmed: React + Vite.
+- Evidence: `frontend/package.json` has `react`, `react-dom`, `vite`, `@vitejs/plugin-react`.
+
+Database
+- Current persistence: JSON file storage (no SQL database).
+- Path: `backend/data/app_store.json` (+ `.bak` rotation).
+- SQLite: No.
+- PostgreSQL: No.
+- Important risk: This is local disk persistence and will be lost on Render ephemeral disk unless moved to managed storage.
+
+File storage
+- Cloudinary: Yes, integrated and enabled when `CLOUDINARY_*` vars are present.
+- Upload behavior:
+  - Primary path: Upload images to Cloudinary.
+  - Fallback path: Save locally to `backend/uploads` if Cloudinary upload fails.
+- Reports (PPTX/XLSX/PDF): Generated and stored locally in `backend/reports` before download.
+- Important risk: Local report files are ephemeral on Render unless uploaded to durable object storage.
+
+Background jobs
+- Current job model: In-process thread pool queue.
+- Implementation: `ThreadPoolExecutor` via `ReportJobManager` (`backend/app/services/report_jobs.py`).
+- Celery: No.
+- APScheduler: No.
+- asyncio task queue: No (except `asyncio.to_thread` used for Cloudinary call wrapping).
+
+Environment variables
+- `.env` support exists in backend (`pydantic-settings` reads `.env`).
+- Production-specific `.env` file: Not present in repo as a separate production file.
+- Cloudinary keys: Expected and currently present in local `backend/.env`.
+- AI API keys: Not required by current backend logic for the configured LLM endpoint.
+
+AI provider
+- Current AI integration: OpenAI-compatible Chat Completions HTTP endpoint via `LLM_BASE_URL`.
+- Configured runtime endpoint now: `http://172.20.7.22:8000/v1` with model `gemma4-31b`.
+- Likely provider type: Self-hosted/local vLLM-style endpoint (not OpenAI/Gemini/Claude managed API as coded today).
+- Render warning: This private/local endpoint will not be reachable unless separately hosted and network-accessible from Render.
+
+Expected traffic
+- Not explicitly defined in code/config.
+- Cannot confirm personal demo vs production vs internal vs public SaaS from repository alone.
+
+Report generation dependencies
+- Generates: PPTX + XLSX + optional PDF.
+- Libraries: `python-pptx`, `openpyxl`, LibreOffice (`soffice`) for PDF conversion.
+- Runtime behavior: Artifacts generated via backend process and written to local filesystem (`reports` dir).
+
+Current ports
+- Frontend dev port: 5173 (Vite config).
+- Backend port: 8080 (run instructions in `how_to_run.txt`).
+
+Authentication
+- Current state: Open access (no user login/auth enforcement in backend routes/frontend).
+- Login/JWT/OAuth: Not implemented in current codebase.

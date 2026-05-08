@@ -62,11 +62,11 @@ def _format_date(d: date | None) -> str:
     return d.isoformat() if d else "—"
 
 
-def create_observation(store: AppStore, body: ObservationCreate) -> ObservationOut:
+async def create_observation(store: AppStore, body: ObservationCreate) -> ObservationOut:
     pname = body.project_name.strip()
-    project_id = store.project_id_for_name(pname)
+    project_id = await store.project_id_for_name(pname)
     manual = (body.manually_written_observation or "").strip()
-    oid = store.allocate_observation_id()
+    oid = await store.allocate_observation_id()
 
     ai_status = "skipped" if not body.generate_text else "pending"
     obs = ObservationRecord(
@@ -95,7 +95,7 @@ def create_observation(store: AppStore, body: ObservationCreate) -> ObservationO
         ai_status=ai_status,
         ai_error=None,
     )
-    store.add_observation(obs)
+    await store.add_observation(obs)
 
     if body.generate_text:
         result = llm_service.generate_observation_text_safe(
@@ -127,25 +127,25 @@ def create_observation(store: AppStore, body: ObservationCreate) -> ObservationO
                 generated_observation="",
                 generated_recommendation="",
             )
-        store.replace_observation(obs)
+        await store.replace_observation(obs)
 
     return observation_to_out(obs)
 
 
-def list_observations(store: AppStore, project_id: int | None = None) -> list[ObservationOut]:
-    return [observation_to_out(o) for o in store.list_observations(project_id)]
+async def list_observations(store: AppStore, project_id: int | None = None) -> list[ObservationOut]:
+    return [observation_to_out(o) for o in await store.list_observations(project_id)]
 
 
-def get_observation(store: AppStore, obs_id: int) -> ObservationRecord | None:
-    return store.get_observation(obs_id)
+async def get_observation(store: AppStore, obs_id: int) -> ObservationRecord | None:
+    return await store.get_observation(obs_id)
 
 
-def update_observation(
+async def update_observation(
     store: AppStore,
     obs_id: int,
     body: ObservationUpdate,
 ) -> ObservationOut | None:
-    old = store.get_observation(obs_id)
+    old = await store.get_observation(obs_id)
     if old is None:
         return None
 
@@ -186,12 +186,12 @@ def update_observation(
                 # Keep previous AI + manual text — only the latest refresh failed.
             )
 
-    store.replace_observation(obs)
+    await store.replace_observation(obs)
     return observation_to_out(obs)
 
 
-def delete_observation(store: AppStore, obs_id: int, *, force: bool = False) -> bool:
-    impacted = [r for r in store.list_reports_desc() if obs_id in r.observation_ids]
+async def delete_observation(store: AppStore, obs_id: int, *, force: bool = False) -> bool:
+    impacted = [r for r in await store.list_reports_desc() if obs_id in r.observation_ids]
     if impacted and not force:
         report_ids = ", ".join(str(r.id) for r in impacted[:6])
         suffix = "..." if len(impacted) > 6 else ""
@@ -201,8 +201,8 @@ def delete_observation(store: AppStore, obs_id: int, *, force: bool = False) -> 
         )
     if impacted and force:
         for r in impacted:
-            store.upsert_report(
+            await store.upsert_report(
                 replace(r, observation_ids=[oid for oid in r.observation_ids if oid != obs_id])
             )
-    deleted = store.delete_observation(obs_id)
+    deleted = await store.delete_observation(obs_id)
     return deleted is not None

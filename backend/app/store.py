@@ -1,14 +1,12 @@
-"""JSON-backed persistence under data/ — no SQL database."""
-
 from __future__ import annotations
 
-import json
-import os
-import threading
+import asyncio
 from datetime import date, datetime, timezone
-from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
+
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from pymongo import ASCENDING, DESCENDING, IndexModel, ReturnDocument
+from pymongo.errors import AutoReconnect, ConnectionFailure, NetworkTimeout, ServerSelectionTimeoutError
 
 from app.config import settings
 from app.domain import ObservationRecord, ReportRecord
@@ -16,15 +14,20 @@ from app.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_store_singleton: AppStore | None = None
-_init_lock = threading.Lock()
+RetryableMongoError = (AutoReconnect, ConnectionFailure, NetworkTimeout, ServerSelectionTimeoutError)
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_datetime(raw: str) -> datetime:
+def _parse_datetime(raw: str | datetime | None) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=timezone.utc)
+        return raw
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     dt = datetime.fromisoformat(raw)
@@ -43,55 +46,146 @@ def _migration_ai_status(d: dict[str, Any]) -> str:
 
 
 class AppStore:
-    """Thread-safe KV store persisted as one JSON file."""
+    def __init__(self, db: AsyncIOMotorDatabase) -> None:
+        self.db = db
+        self.observations = db["observations"]
+        self.reports = db["reports"]
+        self.upload_sessions = db["upload_sessions"]
+        self.jobs = db["jobs"]
+        self.operations_logs = db["operations_logs"]
+        self.users = db["users"]
+        self.settings = db["settings"]
+        self._degraded_reason: str | None = None
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._lock = threading.Lock()
-        self._projects: dict[str, int] = {}
-        self._project_seq = 0
-        self._observations: dict[int, ObservationRecord] = {}
-        self._obs_seq = 0
-        self._reports: dict[int, ReportRecord] = {}
-        self._report_seq = 0
+    async def _with_retry(self, op: Callable[[], Awaitable[Any]]) -> Any:
+        attempts = max(1, settings.mongodb_retry_attempts)
+        for idx in range(attempts):
+            try:
+                return await op()
+            except RetryableMongoError as exc:
+                self._degraded_reason = str(exc)
+                if idx >= attempts - 1:
+                    raise
+                await asyncio.sleep(((idx + 1) * settings.mongodb_retry_backoff_ms) / 1000.0)
 
-    def ensure_loaded(self) -> None:
-        with self._lock:
-            self._load_unlocked()
+    async def ensure_indexes(self) -> None:
+        await self._with_retry(
+            lambda: self.observations.create_indexes(
+                [
+                    IndexModel([("id", ASCENDING)], unique=True, name="observation_id_idx"),
+                    IndexModel([("project_id", ASCENDING)], name="project_id_idx"),
+                    IndexModel([("created_at", DESCENDING)], name="observation_created_at_idx"),
+                    IndexModel([("ai_status", ASCENDING)], name="observation_status_idx"),
+                ]
+            )
+        )
+        await self._with_retry(
+            lambda: self.reports.create_indexes(
+                [
+                    IndexModel([("id", ASCENDING)], unique=True, name="report_id_idx"),
+                    IndexModel([("created_at", DESCENDING)], name="report_created_at_idx"),
+                    IndexModel([("status", ASCENDING)], name="report_status_idx"),
+                ]
+            )
+        )
+        await self._with_retry(
+            lambda: self.upload_sessions.create_indexes(
+                [
+                    IndexModel([("session_id", ASCENDING)], unique=True, name="session_id_idx"),
+                    IndexModel([("status", ASCENDING)], name="upload_session_status_idx"),
+                    IndexModel([("updated_at_ts", DESCENDING)], name="upload_session_updated_at_idx"),
+                ]
+            )
+        )
+        await self._with_retry(
+            lambda: self.jobs.create_indexes(
+                [
+                    IndexModel([("job_id", ASCENDING)], unique=True, name="job_id_idx"),
+                    IndexModel([("report_id", ASCENDING)], name="job_report_id_idx"),
+                    IndexModel([("status", ASCENDING)], name="job_status_idx"),
+                    IndexModel([("created_at", DESCENDING)], name="job_created_at_idx"),
+                ]
+            )
+        )
+        await self._with_retry(
+            lambda: self.operations_logs.create_indexes(
+                [
+                    IndexModel([("created_at", DESCENDING)], name="operations_log_created_at_idx"),
+                    IndexModel([("status", ASCENDING)], name="operations_log_status_idx"),
+                ]
+            )
+        )
+        await self._with_retry(lambda: self.settings.create_indexes([IndexModel([("key", ASCENDING)], unique=True, name="settings_key_idx")]))
 
-    def _load_unlocked(self) -> None:
-        if not self.path.is_file():
-            logger.info("No existing datastore (%s); using empty counters.", self.path)
-            return
+    async def mongo_health(self) -> dict[str, Any]:
+        started = datetime.now(timezone.utc)
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            backup = self.path.with_suffix(self.path.suffix + ".bak")
-            if not backup.is_file():
-                raise
-            logger.warning("Primary datastore is corrupted; recovering from backup %s", backup)
-            raw = json.loads(backup.read_text(encoding="utf-8"))
-        self._projects = {str(k): int(v) for k, v in raw.get("projects", {}).items()}
-        self._project_seq = int(raw.get("project_seq", 0))
-        self._obs_seq = int(raw.get("observation_seq", 0))
-        self._report_seq = int(raw.get("report_seq", 0))
-        self._observations.clear()
-        max_oid = self._obs_seq
-        for v in raw.get("observations", {}).values():
-            o = self._parse_observation(v)
-            self._observations[o.id] = o
-            max_oid = max(max_oid, o.id)
-        self._obs_seq = max(self._obs_seq, max_oid)
+            await self._with_retry(lambda: self.db.command("ping"))
+            latency_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000.0
+            counts = {
+                "observations": await self._with_retry(lambda: self.observations.count_documents({})),
+                "reports": await self._with_retry(lambda: self.reports.count_documents({})),
+                "upload_sessions": await self._with_retry(lambda: self.upload_sessions.count_documents({})),
+                "jobs": await self._with_retry(lambda: self.jobs.count_documents({})),
+                "operations_logs": await self._with_retry(lambda: self.operations_logs.count_documents({})),
+            }
+            self._degraded_reason = None
+            return {"status": "connected", "latency_ms": round(latency_ms, 1), "counts": counts, "reason": None}
+        except Exception as exc:  # noqa: BLE001
+            self._degraded_reason = str(exc)
+            return {
+                "status": "degraded",
+                "latency_ms": None,
+                "counts": {},
+                "reason": self._degraded_reason,
+            }
 
-        self._reports.clear()
-        max_rid = self._report_seq
-        for v in raw.get("reports", {}).values():
-            r = self._parse_report(v)
-            self._reports[r.id] = r
-            max_rid = max(max_rid, r.id)
-        self._report_seq = max(self._report_seq, max_rid)
+    async def _next_seq(self, counter_name: str, minimum: int = 0) -> int:
+        counter_key = f"counter:{counter_name}"
+        base_value = max(0, int(minimum))
+        # Initialize counter document (once) without conflicting operators.
+        await self._with_retry(
+            lambda: self.settings.update_one(
+                {"key": counter_key},
+                {"$setOnInsert": {"key": counter_key, "value": base_value}},
+                upsert=True,
+            )
+        )
+        doc = await self._with_retry(
+            lambda: self.settings.find_one_and_update(
+                {"key": counter_key},
+                {"$inc": {"value": 1}},
+                return_document=ReturnDocument.AFTER,
+            )
+        )
+        return int(doc["value"])
 
-    def _dump_observation(self, o: ObservationRecord) -> dict[str, Any]:
+    async def project_id_for_name(self, name: str) -> int:
+        key = name.strip()
+        if not key:
+            raise ValueError("Project name cannot be empty")
+        existing = await self._with_retry(lambda: self.settings.find_one({"key": f"project:{key}"}))
+        if existing is not None:
+            return int(existing["project_id"])
+        project_id = await self._next_seq("project", 0)
+        await self._with_retry(
+            lambda: self.settings.update_one(
+                {"key": f"project:{key}"},
+                {"$setOnInsert": {"key": f"project:{key}", "project_name": key, "project_id": project_id}},
+                upsert=True,
+            )
+        )
+        final = await self._with_retry(lambda: self.settings.find_one({"key": f"project:{key}"}))
+        return int(final["project_id"])
+
+    async def allocate_observation_id(self) -> int:
+        return await self._next_seq("observation", 0)
+
+    async def allocate_report_id(self) -> int:
+        return await self._next_seq("report", 0)
+
+    @staticmethod
+    def _obs_doc(o: ObservationRecord) -> dict[str, Any]:
         return {
             "id": o.id,
             "project_id": o.project_id,
@@ -109,17 +203,18 @@ class AppStore:
             "image_path": o.image_path,
             "generated_observation": o.generated_observation,
             "generated_recommendation": o.generated_recommendation,
-            "created_at": o.created_at.isoformat(),
+            "created_at": o.created_at,
             "cloudinary_public_id": o.cloudinary_public_id,
             "cloudinary_secure_url": o.cloudinary_secure_url,
-            "image_uploaded_at": o.image_uploaded_at.isoformat() if o.image_uploaded_at else None,
+            "image_uploaded_at": o.image_uploaded_at,
             "image_original_filename": o.image_original_filename,
             "manually_written_observation": o.manually_written_observation,
             "ai_status": o.ai_status,
             "ai_error": o.ai_error,
         }
 
-    def _parse_observation(self, d: dict[str, Any]) -> ObservationRecord:
+    @staticmethod
+    def _obs_row(d: dict[str, Any]) -> ObservationRecord:
         return ObservationRecord(
             id=int(d["id"]),
             project_id=int(d["project_id"]),
@@ -131,25 +226,24 @@ class AppStore:
             observation_type=str(d.get("observation_type", "")),
             severity=str(d.get("severity", "")),
             site_visit_date=date.fromisoformat(str(d["site_visit_date"])) if d.get("site_visit_date") else None,
-            slab_casting_date=date.fromisoformat(str(d["slab_casting_date"]))
-            if d.get("slab_casting_date")
-            else None,
+            slab_casting_date=date.fromisoformat(str(d["slab_casting_date"])) if d.get("slab_casting_date") else None,
             inspection_status=str(d.get("inspection_status", "")),
             third_party_status=str(d.get("third_party_status", "")),
             image_path=str(d["image_path"]),
             generated_observation=str(d.get("generated_observation", "")),
             generated_recommendation=str(d.get("generated_recommendation", "")),
-            created_at=_parse_datetime(str(d["created_at"])),
+            created_at=_parse_datetime(d.get("created_at")) or utcnow(),
             cloudinary_public_id=(str(d["cloudinary_public_id"]) if d.get("cloudinary_public_id") else None),
             cloudinary_secure_url=(str(d["cloudinary_secure_url"]) if d.get("cloudinary_secure_url") else None),
-            image_uploaded_at=_parse_datetime(str(d["image_uploaded_at"])) if d.get("image_uploaded_at") else None,
+            image_uploaded_at=_parse_datetime(d.get("image_uploaded_at")),
             image_original_filename=(str(d["image_original_filename"]) if d.get("image_original_filename") else None),
             manually_written_observation=str(d.get("manually_written_observation") or ""),
             ai_status=_migration_ai_status(d),
             ai_error=(str(d["ai_error"]) if d.get("ai_error") else None),
         )
 
-    def _dump_report(self, r: ReportRecord) -> dict[str, Any]:
+    @staticmethod
+    def _report_doc(r: ReportRecord) -> dict[str, Any]:
         return {
             "id": r.id,
             "project_id": r.project_id,
@@ -160,12 +254,13 @@ class AppStore:
             "xlsx_path": r.xlsx_path,
             "summary": r.summary,
             "error_message": r.error_message,
-            "created_at": r.created_at.isoformat(),
+            "created_at": r.created_at,
             "observation_ids": list(r.observation_ids),
             "include_pdf": bool(r.include_pdf),
         }
 
-    def _parse_report(self, d: dict[str, Any]) -> ReportRecord:
+    @staticmethod
+    def _report_row(d: dict[str, Any]) -> ReportRecord:
         return ReportRecord(
             id=int(d["id"]),
             project_id=int(d["project_id"]),
@@ -176,168 +271,88 @@ class AppStore:
             xlsx_path=d.get("xlsx_path"),
             summary=d.get("summary"),
             error_message=d.get("error_message"),
-            created_at=_parse_datetime(str(d["created_at"])),
+            created_at=_parse_datetime(d.get("created_at")) or utcnow(),
             observation_ids=[int(x) for x in d.get("observation_ids", [])],
             include_pdf=bool(d.get("include_pdf", True)),
         )
 
-    def _persist_unlocked(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        blob = {
-            "projects": self._projects,
-            "project_seq": self._project_seq,
-            "observation_seq": self._obs_seq,
-            "report_seq": self._report_seq,
-            "observations": {
-                str(oid): self._dump_observation(o) for oid, o in sorted(self._observations.items())
-            },
-            "reports": {str(rid): self._dump_report(r) for rid, r in sorted(self._reports.items())},
-        }
-        payload = json.dumps(blob, indent=2)
-        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
-        with NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=str(self.path.parent),
-            prefix=f"{self.path.name}.tmp.",
-            delete=False,
-        ) as tmp:
-            tmp.write(payload)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp_path = Path(tmp.name)
-        if self.path.exists():
-            try:
-                self.path.replace(backup_path)
-            except OSError:
-                logger.warning("Could not rotate datastore backup file: %s", backup_path)
-        os.replace(tmp_path, self.path)
-
-    def _with_persist_rollback_unlocked(self, mutate: Callable[[], None]) -> None:
-        prev_projects = dict(self._projects)
-        prev_project_seq = self._project_seq
-        prev_obs = dict(self._observations)
-        prev_obs_seq = self._obs_seq
-        prev_reports = dict(self._reports)
-        prev_report_seq = self._report_seq
-        try:
-            mutate()
-            self._persist_unlocked()
-        except Exception:
-            self._projects = prev_projects
-            self._project_seq = prev_project_seq
-            self._observations = prev_obs
-            self._obs_seq = prev_obs_seq
-            self._reports = prev_reports
-            self._report_seq = prev_report_seq
-            raise
-
-    def project_id_for_name(self, name: str) -> int:
-        key = name.strip()
-        if not key:
-            raise ValueError("Project name cannot be empty")
-        with self._lock:
-            mutated = False
-            if key not in self._projects:
-                self._project_seq += 1
-                self._projects[key] = self._project_seq
-                mutated = True
-            pid = self._projects[key]
-            if mutated:
-                self._persist_unlocked()
-            return pid
-
-    def persist(self) -> None:
-        """Force flush (normally called after mutations that already persist)."""
-        with self._lock:
-            self._persist_unlocked()
-
-    def allocate_observation_id(self) -> int:
-        with self._lock:
-            self._obs_seq += 1
-            return self._obs_seq
-
-    def add_observation(self, obs: ObservationRecord) -> ObservationRecord:
-        with self._lock:
-            def _mutate() -> None:
-                self._obs_seq = max(self._obs_seq, obs.id)
-                self._observations[obs.id] = obs
-
-            self._with_persist_rollback_unlocked(_mutate)
+    async def add_observation(self, obs: ObservationRecord) -> ObservationRecord:
+        await self._with_retry(lambda: self.observations.update_one({"id": obs.id}, {"$set": self._obs_doc(obs)}, upsert=True))
         return obs
 
-    def list_observations(self, project_id: int | None = None) -> list[ObservationRecord]:
-        with self._lock:
-            rows = list(self._observations.values())
-        rows.sort(key=lambda o: o.id, reverse=True)
-        if project_id is None:
-            return rows
-        return [o for o in rows if o.project_id == project_id]
-
-    def get_observation(self, oid: int) -> ObservationRecord | None:
-        with self._lock:
-            return self._observations.get(oid)
-
-    def replace_observation(self, obs: ObservationRecord) -> None:
-        with self._lock:
-            def _mutate() -> None:
-                self._observations[obs.id] = obs
-
-            self._with_persist_rollback_unlocked(_mutate)
-
-    def delete_observation(self, oid: int) -> ObservationRecord | None:
-        with self._lock:
-            obs = self._observations.get(oid)
-            if obs is not None:
-                def _mutate() -> None:
-                    self._observations.pop(oid, None)
-
-                self._with_persist_rollback_unlocked(_mutate)
-            return obs
-
-    def allocate_report_id(self) -> int:
-        with self._lock:
-            self._report_seq += 1
-            return self._report_seq
-
-    def upsert_report(self, r: ReportRecord) -> ReportRecord:
-        with self._lock:
-            def _mutate() -> None:
-                self._report_seq = max(self._report_seq, r.id)
-                self._reports[r.id] = r
-
-            self._with_persist_rollback_unlocked(_mutate)
-        return r
-
-    def get_report(self, rid: int) -> ReportRecord | None:
-        with self._lock:
-            return self._reports.get(rid)
-
-    def list_reports_desc(self) -> list[ReportRecord]:
-        with self._lock:
-            rows = list(self._reports.values())
-        rows.sort(key=lambda r: r.id, reverse=True)
+    async def list_observations(self, project_id: int | None = None, *, limit: int = 500, skip: int = 0) -> list[ObservationRecord]:
+        query: dict[str, Any] = {}
+        if project_id is not None:
+            query["project_id"] = project_id
+        cursor = self.observations.find(query).sort("id", DESCENDING).skip(max(0, skip)).limit(max(1, limit))
+        rows: list[ObservationRecord] = []
+        async for d in cursor:
+            rows.append(self._obs_row(d))
         return rows
 
-    def delete_report(self, rid: int) -> ReportRecord | None:
-        with self._lock:
-            row = self._reports.get(rid)
-            if row is not None:
-                def _mutate() -> None:
-                    self._reports.pop(rid, None)
+    async def get_observation(self, oid: int) -> ObservationRecord | None:
+        row = await self._with_retry(lambda: self.observations.find_one({"id": oid}))
+        return self._obs_row(row) if row else None
 
-                self._with_persist_rollback_unlocked(_mutate)
-            return row
+    async def replace_observation(self, obs: ObservationRecord) -> None:
+        await self._with_retry(lambda: self.observations.update_one({"id": obs.id}, {"$set": self._obs_doc(obs)}, upsert=True))
+
+    async def delete_observation(self, oid: int) -> ObservationRecord | None:
+        row = await self.get_observation(oid)
+        if row is None:
+            return None
+        await self._with_retry(lambda: self.observations.delete_one({"id": oid}))
+        return row
+
+    async def upsert_report(self, r: ReportRecord) -> ReportRecord:
+        await self._with_retry(lambda: self.reports.update_one({"id": r.id}, {"$set": self._report_doc(r)}, upsert=True))
+        return r
+
+    async def get_report(self, rid: int) -> ReportRecord | None:
+        row = await self._with_retry(lambda: self.reports.find_one({"id": rid}))
+        return self._report_row(row) if row else None
+
+    async def list_reports_desc(self, *, limit: int = 500, skip: int = 0) -> list[ReportRecord]:
+        cursor = self.reports.find({}).sort("id", DESCENDING).skip(max(0, skip)).limit(max(1, limit))
+        out: list[ReportRecord] = []
+        async for row in cursor:
+            out.append(self._report_row(row))
+        return out
+
+    async def delete_report(self, rid: int) -> ReportRecord | None:
+        row = await self.get_report(rid)
+        if row is None:
+            return None
+        await self._with_retry(lambda: self.reports.delete_one({"id": rid}))
+        return row
 
 
-def get_store() -> AppStore:
-    global _store_singleton  # noqa: PLW0603
-    if _store_singleton is None:
-        with _init_lock:
-            if _store_singleton is None:
-                path = Path(settings.data_dir) / "app_store.json"
-                store = AppStore(path)
-                store.ensure_loaded()
-                _store_singleton = store
-                logger.info("Datastore file: %s", path.resolve())
-    return _store_singleton
+class MongoConnectionManager:
+    def __init__(self) -> None:
+        self.client: AsyncIOMotorClient | None = None
+        self.db: AsyncIOMotorDatabase | None = None
+
+    async def connect(self) -> AppStore:
+        self.client = AsyncIOMotorClient(
+            settings.mongodb_url,
+            connectTimeoutMS=settings.mongodb_connect_timeout_ms,
+            serverSelectionTimeoutMS=settings.mongodb_server_selection_timeout_ms,
+            retryWrites=True,
+            appname="sitelens-backend",
+        )
+        self.db = self.client[settings.mongodb_db]
+        store = AppStore(self.db)
+        try:
+            await self.db.command("ping")
+            await store.ensure_indexes()
+            logger.info("MongoDB ready db=%s", settings.mongodb_db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MongoDB startup degraded: %s", exc)
+        return store
+
+    async def close(self) -> None:
+        if self.client is not None:
+            self.client.close()
+            logger.info("MongoDB connection closed")
+            self.client = None
+            self.db = None

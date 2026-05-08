@@ -1,8 +1,10 @@
-from app.store import AppStore, get_store
+from fastapi import Request
+
+from app.store import AppStore
 
 
-def get_store_dep() -> AppStore:
-    return get_store()
+def get_store_dep(request: Request) -> AppStore:
+    return request.app.state.store
 
 
-__all__ = ["get_store_dep", "get_store"]
+__all__ = ["get_store_dep"]

@@ -9,18 +9,20 @@ from app.schemas.upload import (
     UploadSessionCreateRequest,
     UploadSessionOut,
 )
-from app.services import cloudinary_service, upload_service, upload_sessions
+from app.services import cloudinary_service, upload_service
+from app.services.upload_sessions import UploadSessionStore
 from app.store import utcnow
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 
 @router.post("/sessions", response_model=UploadSessionOut, status_code=201)
-def create_upload_session(payload: UploadSessionCreateRequest) -> UploadSessionOut:
-    upload_sessions.upload_sessions.cleanup_expired()
+async def create_upload_session(payload: UploadSessionCreateRequest, request: Request) -> UploadSessionOut:
+    sessions: UploadSessionStore = request.app.state.upload_sessions
+    await sessions.cleanup_expired()
     if payload.total_size > settings.upload_max_bytes:
         raise HTTPException(status_code=413, detail=f"Upload exceeds {settings.upload_max_bytes} bytes")
-    session = upload_sessions.upload_sessions.create(
+    session = await sessions.create(
         filename=Path(payload.filename).name,
         content_type=payload.content_type,
         total_size=payload.total_size,
@@ -36,9 +38,10 @@ def create_upload_session(payload: UploadSessionCreateRequest) -> UploadSessionO
 
 
 @router.get("/sessions/{session_id}", response_model=UploadSessionOut)
-def get_upload_session(session_id: str) -> UploadSessionOut:
-    upload_sessions.upload_sessions.cleanup_expired()
-    session = upload_sessions.upload_sessions.get(session_id)
+async def get_upload_session(session_id: str, request: Request) -> UploadSessionOut:
+    sessions: UploadSessionStore = request.app.state.upload_sessions
+    await sessions.cleanup_expired()
+    session = await sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Upload session not found")
     return UploadSessionOut(
@@ -52,7 +55,8 @@ def get_upload_session(session_id: str) -> UploadSessionOut:
 
 @router.put("/sessions/{session_id}/chunk", response_model=UploadSessionOut)
 async def append_upload_chunk(session_id: str, request: Request) -> UploadSessionOut:
-    upload_sessions.upload_sessions.cleanup_expired()
+    sessions: UploadSessionStore = request.app.state.upload_sessions
+    await sessions.cleanup_expired()
     offset_raw = request.headers.get("X-Chunk-Offset", "")
     try:
         offset = int(offset_raw)
@@ -62,7 +66,7 @@ async def append_upload_chunk(session_id: str, request: Request) -> UploadSessio
     if not payload:
         raise HTTPException(status_code=400, detail="Empty chunk")
     try:
-        session = upload_sessions.upload_sessions.append_chunk(session_id, offset=offset, payload=payload)
+        session = await sessions.append_chunk(session_id, offset=offset, payload=payload)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return UploadSessionOut(
@@ -75,10 +79,11 @@ async def append_upload_chunk(session_id: str, request: Request) -> UploadSessio
 
 
 @router.post("/sessions/{session_id}/complete", response_model=UploadResponse)
-def complete_upload_session(session_id: str) -> UploadResponse:
-    upload_sessions.upload_sessions.cleanup_expired()
+async def complete_upload_session(session_id: str, request: Request) -> UploadResponse:
+    sessions: UploadSessionStore = request.app.state.upload_sessions
+    await sessions.cleanup_expired()
     try:
-        return upload_sessions.upload_sessions.finalize(session_id)
+        return await sessions.finalize(session_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 

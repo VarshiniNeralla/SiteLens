@@ -7,6 +7,7 @@ from io import BytesIO
 from typing import Any
 
 import cloudinary
+import cloudinary.api
 import cloudinary.uploader
 from cloudinary.utils import cloudinary_url
 
@@ -33,6 +34,34 @@ def _ensure_configured() -> None:
         api_secret=settings.cloudinary_api_secret,
         secure=True,
     )
+
+
+def startup_health() -> dict[str, Any]:
+    """Best-effort startup check used for explicit boot logs."""
+    if not cloudinary_enabled():
+        return {
+            "status": "disabled",
+            "reason": "Cloudinary env vars are not fully configured",
+            "cloud_name": settings.cloudinary_cloud_name or None,
+            "folder": settings.cloudinary_folder or "SiteLens",
+        }
+    try:
+        _ensure_configured()
+        # Lightweight auth/config validation at startup.
+        cloudinary.api.ping()
+        return {
+            "status": "connected",
+            "reason": None,
+            "cloud_name": settings.cloudinary_cloud_name,
+            "folder": settings.cloudinary_folder or "SiteLens",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "degraded",
+            "reason": str(exc),
+            "cloud_name": settings.cloudinary_cloud_name or None,
+            "folder": settings.cloudinary_folder or "SiteLens",
+        }
 
 
 def build_optimized_url(public_id: str) -> str:

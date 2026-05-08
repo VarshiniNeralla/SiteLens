@@ -67,35 +67,35 @@ def _verify_image_reference(uri: str) -> None:
 
 
 @router.post("", response_model=ObservationOut, status_code=201)
-def create_observation(
+async def create_observation(
     payload: ObservationCreate,
     store: AppStore = Depends(get_store_dep),
 ) -> ObservationOut:
     _verify_image_reference(payload.image_path)
     try:
-        return observation_service.create_observation(store, payload)
+        return await observation_service.create_observation(store, payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("", response_model=list[ObservationOut])
-def list_observations(
+async def list_observations(
     project_id: int | None = Query(default=None),
     store: AppStore = Depends(get_store_dep),
 ) -> list[ObservationOut]:
-    return observation_service.list_observations(store, project_id)
+    return await observation_service.list_observations(store, project_id)
 
 
 @router.get("/{obs_id}", response_model=ObservationOut)
-def get_observation(obs_id: int, store: AppStore = Depends(get_store_dep)) -> ObservationOut:
-    obs = observation_service.get_observation(store, obs_id)
+async def get_observation(obs_id: int, store: AppStore = Depends(get_store_dep)) -> ObservationOut:
+    obs = await observation_service.get_observation(store, obs_id)
     if obs is None:
         raise HTTPException(status_code=404, detail="Observation not found")
     return observation_service.observation_to_out(obs)
 
 
 @router.put("/{obs_id}", response_model=ObservationOut)
-def update_observation(
+async def update_observation(
     obs_id: int,
     body: ObservationUpdate,
     store: AppStore = Depends(get_store_dep),
@@ -103,7 +103,7 @@ def update_observation(
     if body.image_path is not None:
         _verify_image_reference(body.image_path)
     try:
-        out = observation_service.update_observation(store, obs_id, body)
+        out = await observation_service.update_observation(store, obs_id, body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if out is None:
@@ -112,13 +112,13 @@ def update_observation(
 
 
 @router.delete("/{obs_id}", status_code=204)
-def delete_observation(
+async def delete_observation(
     obs_id: int,
     force: bool = Query(default=False),
     store: AppStore = Depends(get_store_dep),
 ) -> None:
     try:
-        deleted = observation_service.delete_observation(store, obs_id, force=force)
+        deleted = await observation_service.delete_observation(store, obs_id, force=force)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     if not deleted:

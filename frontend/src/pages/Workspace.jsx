@@ -167,6 +167,7 @@ export function WorkspacePage() {
   const [imageLoadState, setImageLoadState] = useState({})
   const [resetBusy, setResetBusy] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState(null)
+  const [pendingResetConfirm, setPendingResetConfirm] = useState(false)
   const [persistenceNotice, setPersistenceNotice] = useState('')
 
   useEffect(() => {
@@ -394,10 +395,6 @@ export function WorkspacePage() {
 
   const resetWorkspaceSession = () => {
     if (resetBusy) return
-    const shouldReset = window.confirm(
-      'Reset workspace session?\n\nThis clears current draft cards and local session cache for this browser.',
-    )
-    if (!shouldReset) return
     setResetBusy(true)
     try {
       const registry = localUrlRegistry.current
@@ -669,7 +666,7 @@ export function WorkspacePage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={resetWorkspaceSession}
+                onClick={() => setPendingResetConfirm(true)}
                 disabled={resetBusy}
                 className={[
                   'inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-[12px] font-medium tracking-[0.01em] transition-all duration-200',
@@ -1074,6 +1071,52 @@ export function WorkspacePage() {
           >
             {reportNotice}
           </motion.p>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {pendingResetConfirm ? (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[70] bg-black/35 backdrop-blur-[2px]"
+              onClick={() => (resetBusy ? null : setPendingResetConfirm(false))}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="fixed left-1/2 top-1/2 z-[71] w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/35 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(246,247,250,0.86))] p-5 shadow-[0_34px_70px_-30px_rgb(0,0,0,0.55)] backdrop-blur-xl"
+            >
+              <p className="text-[16px] font-semibold tracking-tight text-[#111]">Reset workspace session?</p>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-[#6e6e73]">
+                This clears current draft cards and local session cache for this browser.
+              </p>
+              <div className="mt-4 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setPendingResetConfirm(false)}
+                  disabled={resetBusy}
+                  className="rounded-xl border border-black/[0.09] bg-white/75 px-4 py-2 text-[13px] font-medium text-[#444] transition hover:border-black/[0.16] hover:bg-white hover:text-[#111] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingResetConfirm(false)
+                    resetWorkspaceSession()
+                  }}
+                  disabled={resetBusy}
+                  className="rounded-xl border border-black/[0.08] bg-[#111] px-4 py-2 text-[13px] font-semibold text-white shadow-[0_12px_24px_-16px_rgb(0,0,0,0.65)] transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {resetBusy ? 'Resetting…' : 'Reset'}
+                </button>
+              </div>
+            </motion.div>
+          </>
         ) : null}
       </AnimatePresence>
       <AnimatePresence>

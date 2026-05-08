@@ -1,5 +1,6 @@
 import re
 import time
+import asyncio
 from pathlib import Path
 
 from app.config import settings
@@ -16,7 +17,7 @@ _WINDOWS_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 _EXPORT_BREAKER = get_breaker("export_engine")
 
 
-def create_report_draft(
+async def create_report_draft(
     store: AppStore,
     *,
     observation_ids: list[int],
@@ -29,7 +30,7 @@ def create_report_draft(
     by_id: dict[int, ObservationRecord] = {}
     unknown: list[int] = []
     for oid in unique_ids:
-        o = store.get_observation(oid)
+        o = await store.get_observation(oid)
         if o is None:
             unknown.append(oid)
         else:
@@ -59,7 +60,7 @@ def create_report_draft(
     narrative_lines = [observation_text.effective_observation_narrative(o) for o in ordered]
     summary_text = llm_service.generate_report_summary_safe(proj_name, narrative_lines)
     pid = ordered[0].project_id
-    rid = store.allocate_report_id()
+    rid = await store.allocate_report_id()
     oid_list = [o.id for o in ordered]
     draft = ReportRecord(
         id=rid,
@@ -75,11 +76,11 @@ def create_report_draft(
         observation_ids=oid_list,
         include_pdf=include_pdf,
     )
-    store.upsert_report(draft)
+    await store.upsert_report(draft)
     return draft
 
 
-def process_report_generation(
+async def process_report_generation(
     store: AppStore,
     *,
     report_id: int,
@@ -91,12 +92,12 @@ def process_report_generation(
     if mode == "outage":
         _EXPORT_BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0)
         raise ValueError("Injected export outage")
-    report = store.get_report(report_id)
+    report = await store.get_report(report_id)
     if report is None:
         raise ValueError(f"Report {report_id} not found")
     observations: list[ObservationRecord] = []
     for oid in report.observation_ids:
-        obs = store.get_observation(oid)
+        obs = await store.get_observation(oid)
         if obs is None:
             raise ValueError(f"Observation {oid} not found")
         observations.append(obs)
@@ -124,25 +125,27 @@ def process_report_generation(
         observation_ids=list(report.observation_ids),
         include_pdf=report.include_pdf,
     )
-    store.upsert_report(processing)
+    await store.upsert_report(processing)
 
     try:
         if mode == "fail_after_ppt":
             # Build one artifact then fail to verify recovery and failed states.
-            ppt_service.build_quality_report_pptx(
+            await asyncio.to_thread(
+                ppt_service.build_quality_report_pptx,
                 project_name=proj_name,
                 title=report.title,
                 observations=list(observations),
                 output_path=ppt_path,
             )
             raise RuntimeError("Injected export failure after PPT generation")
-        ppt_service.build_quality_report_pptx(
+        await asyncio.to_thread(
+            ppt_service.build_quality_report_pptx,
             project_name=proj_name,
             title=report.title,
             observations=list(observations),
             output_path=ppt_path,
         )
-        excel_service.build_quality_observation_xlsx(observations=list(observations), output_path=xlsx_path)
+        await asyncio.to_thread(excel_service.build_quality_observation_xlsx, observations=list(observations), output_path=xlsx_path)
         pptx_resolved = str(ppt_path.resolve())
         xlsx_resolved = str(xlsx_path.resolve())
         pdf_resolved: str | None = None
@@ -150,7 +153,7 @@ def process_report_generation(
 
         if processing.include_pdf:
             try:
-                pdf_path_obj = pdf_service.pptx_to_pdf(ppt_path, Path(settings.reports_dir))
+                pdf_path_obj = await asyncio.to_thread(pdf_service.pptx_to_pdf, ppt_path, Path(settings.reports_dir))
                 pdf_resolved = str(pdf_path_obj.resolve())
             except FileNotFoundError as pdf_exc:
                 # Microsoft-only environments commonly skip LibreOffice; keep report ready with PPTX.
@@ -174,7 +177,7 @@ def process_report_generation(
             observation_ids=list(processing.observation_ids),
             include_pdf=processing.include_pdf,
         )
-        store.upsert_report(updated)
+        await store.upsert_report(updated)
         _EXPORT_BREAKER.record_success(latency_ms=(time.perf_counter() - started) * 1000.0)
         return _report_to_out(updated)
     except Exception as e:  # noqa: BLE001
@@ -194,7 +197,7 @@ def process_report_generation(
             observation_ids=list(processing.observation_ids),
             include_pdf=processing.include_pdf,
         )
-        store.upsert_report(failed)
+        await store.upsert_report(failed)
         return _report_to_out(failed)
 
 
@@ -215,12 +218,12 @@ def _report_to_out(r: ReportRecord) -> ReportOut:
     )
 
 
-def list_reports(store: AppStore) -> list[ReportRecord]:
-    return store.list_reports_desc()
+async def list_reports(store: AppStore) -> list[ReportRecord]:
+    return await store.list_reports_desc(limit=2000)
 
 
-def get_report(store: AppStore, report_id: int) -> ReportRecord | None:
-    return store.get_report(report_id)
+async def get_report(store: AppStore, report_id: int) -> ReportRecord | None:
+    return await store.get_report(report_id)
 
 
 def sitelens_xlsx_stem(project_name: str) -> str:

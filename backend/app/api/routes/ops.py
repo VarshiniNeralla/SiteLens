@@ -1,13 +1,13 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_store_dep
 from app.services.circuit_breaker import all_breaker_snapshots
 from app.services.fault_injection import faults
 from app.services.report_jobs import job_manager
-from app.services.upload_sessions import upload_sessions
+from app.services.upload_sessions import UploadSessionStore
 from app.store import AppStore
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -67,11 +67,13 @@ def _service_health_from_breaker(name: str, snap: dict[str, object] | None) -> d
 
 
 @router.get("/health")
-def ops_health(store: AppStore = Depends(get_store_dep)) -> dict[str, object]:
-    reports = store.list_reports_desc()
-    observations = store.list_observations()
-    upload_sessions.cleanup_expired()
-    active_uploads = len([s for s in upload_sessions.list_sessions() if s.status == "active"])
+async def ops_health(request: Request, store: AppStore = Depends(get_store_dep)) -> dict[str, object]:
+    reports = await store.list_reports_desc(limit=2000)
+    observations = await store.list_observations(limit=2000)
+    sessions_store: UploadSessionStore = request.app.state.upload_sessions
+    await sessions_store.cleanup_expired()
+    active_uploads = len([s for s in await sessions_store.list_sessions() if s.status == "active"])
+    mongo = await store.mongo_health()
     return {
         "counts": {
             "reports_total": len(reports),
@@ -80,6 +82,7 @@ def ops_health(store: AppStore = Depends(get_store_dep)) -> dict[str, object]:
             "observations_total": len(observations),
             "active_upload_sessions": active_uploads,
         },
+        "database": mongo,
         "breakers": all_breaker_snapshots(),
     }
 
@@ -103,11 +106,12 @@ def ops_jobs() -> dict[str, object]:
 
 
 @router.get("/overview")
-def ops_overview(store: AppStore = Depends(get_store_dep)) -> dict[str, object]:
-    reports = store.list_reports_desc()
-    observations = store.list_observations()
-    upload_sessions.cleanup_expired()
-    sessions = upload_sessions.list_sessions()
+async def ops_overview(request: Request, store: AppStore = Depends(get_store_dep)) -> dict[str, object]:
+    reports = await store.list_reports_desc(limit=2000)
+    observations = await store.list_observations(limit=2000)
+    sessions_store: UploadSessionStore = request.app.state.upload_sessions
+    await sessions_store.cleanup_expired()
+    sessions = await sessions_store.list_sessions()
     active_uploads = len([s for s in sessions if s.status == "active"])
     breaker_map = {str(x.get("name")): x for x in all_breaker_snapshots()}
     deps = [
@@ -115,6 +119,25 @@ def ops_overview(store: AppStore = Depends(get_store_dep)) -> dict[str, object]:
         _service_health_from_breaker("Cloudinary", breaker_map.get("cloudinary")),
         _service_health_from_breaker("Export Engine", breaker_map.get("export_engine")),
     ]
+    mongo = await store.mongo_health()
+    deps.append(
+        {
+            "service": "MongoDB",
+            "status": "operational" if mongo["status"] == "connected" else "degraded",
+            "recovery_state": "stable" if mongo["status"] == "connected" else "monitoring",
+            "uptime_pct": 100.0 if mongo["status"] == "connected" else 0.0,
+            "avg_latency_ms": mongo["latency_ms"],
+            "success_rate_pct": 100.0 if mongo["status"] == "connected" else 0.0,
+            "retry_count": 0,
+            "recent_failures": 0 if mongo["status"] == "connected" else 1,
+            "last_success_at": datetime.now(UTC).isoformat() if mongo["status"] == "connected" else None,
+            "last_failure_at": datetime.now(UTC).isoformat() if mongo["status"] != "connected" else None,
+            "last_outage_at": None,
+            "last_recovery_at": None,
+            "connection_status": mongo["status"],
+            "collection_counts": mongo.get("counts", {}),
+        }
+    )
 
     jobs = sorted(job_manager.list(), key=lambda x: x.created_at, reverse=True)
     completed_durations: list[float] = []

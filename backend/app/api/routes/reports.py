@@ -21,9 +21,9 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 _WINDOWS_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 
 
-def _primary_project_name(store: AppStore, r: ReportRecord) -> str | None:
+async def _primary_project_name(store: AppStore, r: ReportRecord) -> str | None:
     for oid in r.observation_ids:
-        obs = store.get_observation(oid)
+        obs = await store.get_observation(oid)
         if obs and obs.project_name:
             return obs.project_name
     return None
@@ -37,50 +37,51 @@ def _sanitize_download_basename(name: str) -> str:
     return clean[:120]
 
 
-def _build_download_basename(store: AppStore, row: ReportRecord) -> str:
+async def _build_download_basename(store: AppStore, row: ReportRecord) -> str:
     title = (row.title or "").strip()
     if not title:
         title = f"Quality walkthrough — Report {row.id}"
     # If multiple reports share title, append date for clear user-facing uniqueness.
     title_key = title.casefold()
-    same_title_count = sum(1 for r in list_reports(store) if (r.title or "").strip().casefold() == title_key)
+    same_title_count = sum(1 for r in await list_reports(store) if (r.title or "").strip().casefold() == title_key)
     if same_title_count > 1:
         title = f"{title} — {row.created_at.date().isoformat()}"
     return _sanitize_download_basename(title)
 
 
-def _build_download_basename_for_format(store: AppStore, row: ReportRecord, fmt: str) -> str:
+async def _build_download_basename_for_format(store: AppStore, row: ReportRecord, fmt: str) -> str:
     fmt_norm = fmt.lower().strip()
     if fmt_norm == "xlsx":
-        proj = _primary_project_name(store, row) or "Observations"
+        proj = await _primary_project_name(store, row) or "Observations"
         base = sitelens_xlsx_stem(proj)
-        same_project_reports = sum(
-            1
-            for r in list_reports(store)
-            if (_primary_project_name(store, r) or "Observations").casefold() == proj.casefold()
-        )
+        same_project_reports = 0
+        for r in await list_reports(store):
+            pname = (await _primary_project_name(store, r)) or "Observations"
+            if pname.casefold() == proj.casefold():
+                same_project_reports += 1
         if same_project_reports > 1:
             base = f"{base}_{row.created_at.date().isoformat()}"
         return base[:120]
-    return _build_download_basename(store, row)
+    return await _build_download_basename(store, row)
 
 
 @router.post("/generate", response_model=ReportGenerateAccepted, status_code=202)
-def generate_report(
+async def generate_report(
     payload: ReportGenerateRequest,
     store: AppStore = Depends(get_store_dep),
 ) -> ReportGenerateAccepted:
     try:
-        draft = create_report_draft(
+        draft = await create_report_draft(
             store=store,
             observation_ids=payload.observation_ids,
             title=payload.title,
             include_pdf=payload.include_pdf,
             status="queued",
         )
-        job_id = job_manager.submit(
+        job_id = await job_manager.submit(
             draft.id,
             lambda: process_report_generation(store, report_id=draft.id),
+            store=store,
         )
         return ReportGenerateAccepted(report_id=draft.id, job_id=job_id, status="queued")
     except ValueError as e:
@@ -101,8 +102,8 @@ def get_report_job(job_id: str) -> dict[str, str | int | None]:
 
 
 @router.get("", response_model=list[ReportSummaryOut])
-def api_list_reports(store: AppStore = Depends(get_store_dep)) -> list[ReportSummaryOut]:
-    rows = list_reports(store)
+async def api_list_reports(store: AppStore = Depends(get_store_dep)) -> list[ReportSummaryOut]:
+    rows = await list_reports(store)
     return [
         ReportSummaryOut(
             id=r.id,
@@ -113,7 +114,7 @@ def api_list_reports(store: AppStore = Depends(get_store_dep)) -> list[ReportSum
             has_pptx=r.pptx_path is not None and Path(r.pptx_path).is_file(),
             has_pdf=r.pdf_path is not None and Path(r.pdf_path).is_file(),
             has_xlsx=r.xlsx_path is not None and Path(r.xlsx_path).is_file(),
-            primary_project_name=_primary_project_name(store, r),
+            primary_project_name=await _primary_project_name(store, r),
             observation_count=len(r.observation_ids),
         )
         for r in rows
@@ -138,21 +139,21 @@ def _detail_report(report: ReportRecord) -> ReportOut:
 
 
 @router.get("/{report_id}", response_model=ReportOut)
-def get_report_by_id(report_id: int, store: AppStore = Depends(get_store_dep)) -> ReportOut:
-    row = get_report(store, report_id)
+async def get_report_by_id(report_id: int, store: AppStore = Depends(get_store_dep)) -> ReportOut:
+    row = await get_report(store, report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
     return _detail_report(row)
 
 
 @router.get("/{report_id}/download")
-def download_report(
+async def download_report(
     report_id: int,
     file_format: str = Query("pptx", alias="format", description="pptx | pdf | xlsx"),
     store: AppStore = Depends(get_store_dep),
 ) -> FileResponse:
     fmt = file_format.lower().strip()
-    row = get_report(store, report_id)
+    row = await get_report(store, report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
@@ -162,7 +163,7 @@ def download_report(
         p = Path(row.pptx_path)
         if not p.is_file():
             raise HTTPException(status_code=404, detail="Presentation file missing")
-        download_name = f"{_build_download_basename_for_format(store, row, 'pptx')}.pptx"
+        download_name = f"{await _build_download_basename_for_format(store, row, 'pptx')}.pptx"
         return FileResponse(
             path=str(p),
             filename=download_name,
@@ -174,7 +175,7 @@ def download_report(
         p = Path(row.pdf_path)
         if not p.is_file():
             raise HTTPException(status_code=404, detail="PDF file missing")
-        download_name = f"{_build_download_basename_for_format(store, row, 'pdf')}.pdf"
+        download_name = f"{await _build_download_basename_for_format(store, row, 'pdf')}.pdf"
         return FileResponse(path=str(p), filename=download_name, media_type="application/pdf")
     if fmt == "xlsx":
         if not row.xlsx_path:
@@ -182,7 +183,7 @@ def download_report(
         p = Path(row.xlsx_path)
         if not p.is_file():
             raise HTTPException(status_code=404, detail="Excel file missing")
-        download_name = f"{_build_download_basename_for_format(store, row, 'xlsx')}.xlsx"
+        download_name = f"{await _build_download_basename_for_format(store, row, 'xlsx')}.xlsx"
         return FileResponse(
             path=str(p),
             filename=download_name,
@@ -193,12 +194,12 @@ def download_report(
 
 
 @router.patch("/{report_id}", response_model=ReportOut)
-def rename_report(
+async def rename_report(
     report_id: int,
     body: ReportUpdateRequest,
     store: AppStore = Depends(get_store_dep),
 ) -> ReportOut:
-    row = get_report(store, report_id)
+    row = await get_report(store, report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
     updated = ReportRecord(
@@ -215,13 +216,13 @@ def rename_report(
         observation_ids=list(row.observation_ids),
         include_pdf=row.include_pdf,
     )
-    store.upsert_report(updated)
+    await store.upsert_report(updated)
     return _detail_report(updated)
 
 
 @router.delete("/{report_id}", status_code=204)
-def delete_report(report_id: int, store: AppStore = Depends(get_store_dep)) -> None:
-    row = store.delete_report(report_id)
+async def delete_report(report_id: int, store: AppStore = Depends(get_store_dep)) -> None:
+    row = await store.delete_report(report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
     # Keep filesystem tidy, but failure to remove files should not block metadata delete.
