@@ -45,3 +45,4 @@ class ReportRecord:
     error_message: str | None
     created_at: datetime
     observation_ids: list[int]
+    include_pdf: bool = True

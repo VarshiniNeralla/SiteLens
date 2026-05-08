@@ -11,9 +11,12 @@ import cloudinary.uploader
 from cloudinary.utils import cloudinary_url
 
 from app.config import settings
+from app.services.fault_injection import faults
 from app.logging_config import get_logger
+from app.services.circuit_breaker import get_breaker
 
 logger = get_logger(__name__)
+_BREAKER = get_breaker("cloudinary")
 
 _MAX_UPLOAD_RETRIES = 3
 _RETRY_BASE_SECONDS = 0.45
@@ -66,6 +69,12 @@ def upload_image_bytes(file_bytes: bytes, original_filename: str) -> dict[str, A
     """
     if not cloudinary_enabled():
         raise RuntimeError("Cloudinary is not configured (set CLOUDINARY_* env vars).")
+    if not _BREAKER.allow():
+        raise RuntimeError("Cloudinary temporarily unavailable (circuit open)")
+    mode = faults.apply("cloudinary")
+    if mode == "outage":
+        _BREAKER.record_failure()
+        raise RuntimeError("Injected Cloudinary outage")
 
     _ensure_configured()
 
@@ -92,6 +101,7 @@ def upload_image_bytes(file_bytes: bytes, original_filename: str) -> dict[str, A
 
             optimized = build_optimized_url(public_id)
             logger.info("Cloudinary upload OK public_id=%s attempt=%s", public_id, attempt)
+            _BREAKER.record_success()
             return {
                 "public_id": public_id,
                 "secure_url": secure_url,
@@ -102,6 +112,7 @@ def upload_image_bytes(file_bytes: bytes, original_filename: str) -> dict[str, A
             }
         except BaseException as e:  # noqa: BLE001 — Cloudinary/network surface
             last_err = e
+            _BREAKER.record_failure()
             logger.warning("Cloudinary upload attempt %s failed: %s", attempt, e)
             if attempt < _MAX_UPLOAD_RETRIES:
                 time.sleep(_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))

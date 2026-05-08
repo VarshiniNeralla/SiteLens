@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from tempfile import NamedTemporaryFile
+from typing import Any, Callable
 
 from app.config import settings
 from app.domain import ObservationRecord, ReportRecord
@@ -61,7 +63,14 @@ class AppStore:
         if not self.path.is_file():
             logger.info("No existing datastore (%s); using empty counters.", self.path)
             return
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            backup = self.path.with_suffix(self.path.suffix + ".bak")
+            if not backup.is_file():
+                raise
+            logger.warning("Primary datastore is corrupted; recovering from backup %s", backup)
+            raw = json.loads(backup.read_text(encoding="utf-8"))
         self._projects = {str(k): int(v) for k, v in raw.get("projects", {}).items()}
         self._project_seq = int(raw.get("project_seq", 0))
         self._obs_seq = int(raw.get("observation_seq", 0))
@@ -153,6 +162,7 @@ class AppStore:
             "error_message": r.error_message,
             "created_at": r.created_at.isoformat(),
             "observation_ids": list(r.observation_ids),
+            "include_pdf": bool(r.include_pdf),
         }
 
     def _parse_report(self, d: dict[str, Any]) -> ReportRecord:
@@ -168,6 +178,7 @@ class AppStore:
             error_message=d.get("error_message"),
             created_at=_parse_datetime(str(d["created_at"])),
             observation_ids=[int(x) for x in d.get("observation_ids", [])],
+            include_pdf=bool(d.get("include_pdf", True)),
         )
 
     def _persist_unlocked(self) -> None:
@@ -182,7 +193,44 @@ class AppStore:
             },
             "reports": {str(rid): self._dump_report(r) for rid, r in sorted(self._reports.items())},
         }
-        self.path.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+        payload = json.dumps(blob, indent=2)
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(self.path.parent),
+            prefix=f"{self.path.name}.tmp.",
+            delete=False,
+        ) as tmp:
+            tmp.write(payload)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        if self.path.exists():
+            try:
+                self.path.replace(backup_path)
+            except OSError:
+                logger.warning("Could not rotate datastore backup file: %s", backup_path)
+        os.replace(tmp_path, self.path)
+
+    def _with_persist_rollback_unlocked(self, mutate: Callable[[], None]) -> None:
+        prev_projects = dict(self._projects)
+        prev_project_seq = self._project_seq
+        prev_obs = dict(self._observations)
+        prev_obs_seq = self._obs_seq
+        prev_reports = dict(self._reports)
+        prev_report_seq = self._report_seq
+        try:
+            mutate()
+            self._persist_unlocked()
+        except Exception:
+            self._projects = prev_projects
+            self._project_seq = prev_project_seq
+            self._observations = prev_obs
+            self._obs_seq = prev_obs_seq
+            self._reports = prev_reports
+            self._report_seq = prev_report_seq
+            raise
 
     def project_id_for_name(self, name: str) -> int:
         key = name.strip()
@@ -211,9 +259,11 @@ class AppStore:
 
     def add_observation(self, obs: ObservationRecord) -> ObservationRecord:
         with self._lock:
-            self._obs_seq = max(self._obs_seq, obs.id)
-            self._observations[obs.id] = obs
-            self._persist_unlocked()
+            def _mutate() -> None:
+                self._obs_seq = max(self._obs_seq, obs.id)
+                self._observations[obs.id] = obs
+
+            self._with_persist_rollback_unlocked(_mutate)
         return obs
 
     def list_observations(self, project_id: int | None = None) -> list[ObservationRecord]:
@@ -230,14 +280,19 @@ class AppStore:
 
     def replace_observation(self, obs: ObservationRecord) -> None:
         with self._lock:
-            self._observations[obs.id] = obs
-            self._persist_unlocked()
+            def _mutate() -> None:
+                self._observations[obs.id] = obs
+
+            self._with_persist_rollback_unlocked(_mutate)
 
     def delete_observation(self, oid: int) -> ObservationRecord | None:
         with self._lock:
-            obs = self._observations.pop(oid, None)
+            obs = self._observations.get(oid)
             if obs is not None:
-                self._persist_unlocked()
+                def _mutate() -> None:
+                    self._observations.pop(oid, None)
+
+                self._with_persist_rollback_unlocked(_mutate)
             return obs
 
     def allocate_report_id(self) -> int:
@@ -247,9 +302,11 @@ class AppStore:
 
     def upsert_report(self, r: ReportRecord) -> ReportRecord:
         with self._lock:
-            self._report_seq = max(self._report_seq, r.id)
-            self._reports[r.id] = r
-            self._persist_unlocked()
+            def _mutate() -> None:
+                self._report_seq = max(self._report_seq, r.id)
+                self._reports[r.id] = r
+
+            self._with_persist_rollback_unlocked(_mutate)
         return r
 
     def get_report(self, rid: int) -> ReportRecord | None:
@@ -264,9 +321,12 @@ class AppStore:
 
     def delete_report(self, rid: int) -> ReportRecord | None:
         with self._lock:
-            row = self._reports.pop(rid, None)
+            row = self._reports.get(rid)
             if row is not None:
-                self._persist_unlocked()
+                def _mutate() -> None:
+                    self._reports.pop(rid, None)
+
+                self._with_persist_rollback_unlocked(_mutate)
             return row
 
 

@@ -5,22 +5,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ObservationCreate(BaseModel):
     project_name: str = Field(..., min_length=1, max_length=512)
-    tower: str = ""
-    floor: str = ""
-    flat: str = ""
-    room: str = ""
-    observation_type: str = ""
-    severity: str = ""
+    tower: str = Field(..., min_length=1, max_length=64)
+    floor: str = Field(..., min_length=1, max_length=64)
+    flat: str = Field(..., min_length=1, max_length=64)
+    room: str = Field(..., min_length=1, max_length=128)
+    observation_type: str = Field(..., min_length=1, max_length=128)
+    severity: str = Field(..., min_length=1, max_length=64)
     site_visit_date: date | None = None
     slab_casting_date: date | None = None
-    inspection_status: str = ""
-    third_party_status: str = ""
+    inspection_status: str = Field(default="Yet to be Confirmed", max_length=128)
+    third_party_status: str = Field(default="Yet to be Confirmed", max_length=128)
     image_path: str = Field(..., min_length=1)
     cloudinary_public_id: str | None = None
     cloudinary_secure_url: str | None = None
     image_uploaded_at: datetime | None = None
     image_original_filename: str | None = None
-    manually_written_observation: str = ""
+    manually_written_observation: str = Field(default="", max_length=4000)
     generate_text: bool = True
 
 

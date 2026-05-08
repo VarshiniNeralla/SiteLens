@@ -1,13 +1,18 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import JSONResponse
 
-from app.api.routes import observations, reports, upload
+from app.api.routes import observations, ops, reports, upload
 from app.config import settings
 from app.logging_config import get_logger, setup_logging
+from app.services.report_jobs import job_manager
+from app.services.report_service import process_report_generation
 from app.store import get_store
 
 setup_logging()
@@ -19,7 +24,13 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    _ = get_store()
+    store = get_store()
+    recovered = job_manager.recover_pending(
+        store,
+        lambda report_id: (lambda: process_report_generation(store, report_id=report_id)),
+    )
+    if recovered:
+        logger.info("Recovered %s pending report job(s) after restart", recovered)
     logger.info("JSON datastore ready")
     yield
 
@@ -44,6 +55,23 @@ API_PREFIX = "/api"
 app.include_router(upload.router, prefix=API_PREFIX)
 app.include_router(observations.router, prefix=API_PREFIX)
 app.include_router(reports.router, prefix=API_PREFIX)
+app.include_router(ops.router, prefix=API_PREFIX)
+
+
+@app.middleware("http")
+async def correlation_middleware(request: Request, call_next):
+    cid = request.headers.get("X-Correlation-Id") or uuid4().hex
+    request.state.correlation_id = cid
+    try:
+        response = await call_next(request)
+        response.headers["X-Correlation-Id"] = cid
+        return response
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unhandled error cid=%s path=%s err=%s", cid, request.url.path, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Unexpected server error", "correlation_id": cid},
+        )
 
 
 @app.get("/healthz")

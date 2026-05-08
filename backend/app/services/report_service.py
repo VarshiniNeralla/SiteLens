@@ -6,19 +6,23 @@ from app.domain import ObservationRecord, ReportRecord
 from app.logging_config import get_logger
 from app.schemas.report import ReportOut
 from app.services import excel_service, llm_service, observation_text, pdf_service, ppt_service
+from app.services.circuit_breaker import get_breaker
+from app.services.fault_injection import faults
 from app.store import AppStore, utcnow
 
 logger = get_logger(__name__)
 _WINDOWS_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
+_EXPORT_BREAKER = get_breaker("export_engine")
 
 
-def generate_report_sync(
+def create_report_draft(
     store: AppStore,
     *,
     observation_ids: list[int],
     title: str | None,
     include_pdf: bool,
-) -> ReportOut:
+    status: str = "queued",
+) -> ReportRecord:
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     unique_ids = list(dict.fromkeys(observation_ids))
     by_id: dict[int, ObservationRecord] = {}
@@ -50,26 +54,17 @@ def generate_report_sync(
             f"Got distinct project names: {sorted(project_names)!r}"
         )
     proj_name = project_names.pop()
-
     report_title = title or f"Quality walkthrough — {proj_name}"
     narrative_lines = [observation_text.effective_observation_narrative(o) for o in ordered]
     summary_text = llm_service.generate_report_summary_safe(proj_name, narrative_lines)
-
     pid = ordered[0].project_id
-
     rid = store.allocate_report_id()
-    export_base = _sanitize_export_basename(report_title)
-    xlsx_export_base = sitelens_xlsx_stem(proj_name)
-    ppt_path = _next_available_export_path(Path(settings.reports_dir), export_base, ".pptx")
-    xlsx_path = _next_available_export_path(Path(settings.reports_dir), xlsx_export_base, ".xlsx")
-
     oid_list = [o.id for o in ordered]
-
-    report = ReportRecord(
+    draft = ReportRecord(
         id=rid,
         project_id=pid,
         title=report_title,
-        status="draft",
+        status=status,
         pptx_path=None,
         pdf_path=None,
         xlsx_path=None,
@@ -77,23 +72,81 @@ def generate_report_sync(
         error_message=None,
         created_at=utcnow(),
         observation_ids=oid_list,
+        include_pdf=include_pdf,
     )
-    store.upsert_report(report)
+    store.upsert_report(draft)
+    return draft
+
+
+def process_report_generation(
+    store: AppStore,
+    *,
+    report_id: int,
+) -> ReportOut:
+    if not _EXPORT_BREAKER.allow():
+        raise ValueError("Export service temporarily unavailable (circuit open)")
+    mode = faults.apply("export")
+    if mode == "outage":
+        _EXPORT_BREAKER.record_failure()
+        raise ValueError("Injected export outage")
+    report = store.get_report(report_id)
+    if report is None:
+        raise ValueError(f"Report {report_id} not found")
+    observations: list[ObservationRecord] = []
+    for oid in report.observation_ids:
+        obs = store.get_observation(oid)
+        if obs is None:
+            raise ValueError(f"Observation {oid} not found")
+        observations.append(obs)
+    if not observations:
+        raise ValueError("No observations supplied")
+    project_names = {o.project_name for o in observations}
+    proj_name = next(iter(project_names))
+
+    export_base = _sanitize_export_basename(report.title)
+    xlsx_export_base = sitelens_xlsx_stem(proj_name)
+    ppt_path = _next_available_export_path(Path(settings.reports_dir), export_base, ".pptx")
+    xlsx_path = _next_available_export_path(Path(settings.reports_dir), xlsx_export_base, ".xlsx")
+
+    processing = ReportRecord(
+        id=report.id,
+        project_id=report.project_id,
+        title=report.title,
+        status="processing",
+        pptx_path=None,
+        pdf_path=None,
+        xlsx_path=None,
+        summary=report.summary,
+        error_message=None,
+        created_at=report.created_at,
+        observation_ids=list(report.observation_ids),
+        include_pdf=report.include_pdf,
+    )
+    store.upsert_report(processing)
 
     try:
+        if mode == "fail_after_ppt":
+            # Build one artifact then fail to verify recovery and failed states.
+            ppt_service.build_quality_report_pptx(
+                project_name=proj_name,
+                title=report.title,
+                observations=list(observations),
+                output_path=ppt_path,
+            )
+            raise RuntimeError("Injected export failure after PPT generation")
         ppt_service.build_quality_report_pptx(
             project_name=proj_name,
-            title=report_title,
-            observations=list(ordered),
+            title=report.title,
+            observations=list(observations),
             output_path=ppt_path,
         )
-        excel_service.build_quality_observation_xlsx(observations=list(ordered), output_path=xlsx_path)
+        excel_service.build_quality_observation_xlsx(observations=list(observations), output_path=xlsx_path)
         pptx_resolved = str(ppt_path.resolve())
         xlsx_resolved = str(xlsx_path.resolve())
         pdf_resolved: str | None = None
         pdf_note: list[str] = []
 
-        if include_pdf:
+        if processing.include_pdf:
             try:
                 pdf_path_obj = pdf_service.pptx_to_pdf(ppt_path, Path(settings.reports_dir))
                 pdf_resolved = str(pdf_path_obj.resolve())
@@ -106,34 +159,38 @@ def generate_report_sync(
                 pdf_note.append(f"PDF export failed: {pdf_exc}")
 
         updated = ReportRecord(
-            id=report.id,
-            project_id=report.project_id,
-            title=report.title,
+            id=processing.id,
+            project_id=processing.project_id,
+            title=processing.title,
             status="ready",
             pptx_path=pptx_resolved,
             pdf_path=pdf_resolved,
             xlsx_path=xlsx_resolved,
-            summary=report.summary,
+            summary=processing.summary,
             error_message="\n".join(pdf_note)[:1990] if pdf_note else None,
-            created_at=report.created_at,
-            observation_ids=oid_list,
+            created_at=processing.created_at,
+            observation_ids=list(processing.observation_ids),
+            include_pdf=processing.include_pdf,
         )
         store.upsert_report(updated)
+        _EXPORT_BREAKER.record_success()
         return _report_to_out(updated)
     except Exception as e:  # noqa: BLE001
+        _EXPORT_BREAKER.record_failure()
         logger.exception("Report generation failed: %s", e)
         failed = ReportRecord(
-            id=report.id,
-            project_id=report.project_id,
-            title=report.title,
+            id=processing.id,
+            project_id=processing.project_id,
+            title=processing.title,
             status="failed",
             pptx_path=None,
             pdf_path=None,
             xlsx_path=None,
-            summary=report.summary,
+            summary=processing.summary,
             error_message=str(e)[:1990],
-            created_at=report.created_at,
-            observation_ids=oid_list,
+            created_at=processing.created_at,
+            observation_ids=list(processing.observation_ids),
+            include_pdf=processing.include_pdf,
         )
         store.upsert_report(failed)
         return _report_to_out(failed)
@@ -152,6 +209,7 @@ def _report_to_out(r: ReportRecord) -> ReportOut:
         error_message=r.error_message,
         created_at=r.created_at,
         observation_ids=r.observation_ids[:],
+        include_pdf=r.include_pdf,
     )
 
 

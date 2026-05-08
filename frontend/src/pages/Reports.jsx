@@ -20,6 +20,7 @@ import {
   deleteObservation,
   deleteReport,
   generateReport,
+  getReportJob,
   getReport,
   listObservations,
   listReports,
@@ -78,11 +79,12 @@ export function ReportsPage() {
   const location = useLocation()
   const QUEUE_PAGE_SIZE = 4
   const reportCardRefs = useRef(new Map())
+  const latestLoadRef = useRef(0)
   const [observations, setObservations] = useState([])
   const [reports, setReports] = useState([])
   const [selected, setSelected] = useState(() => new Set())
   const [title, setTitle] = useState('')
-  const [includePdf, setIncludePdf] = useState(false)
+  const [includePdf] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -95,12 +97,17 @@ export function ReportsPage() {
   const [selectedReportIds, setSelectedReportIds] = useState(() => new Set())
   const [queueProjectFilter, setQueueProjectFilter] = useState('all')
   const [queueSortAsc, setQueueSortAsc] = useState(true)
+  const [operationBanner, setOperationBanner] = useState('')
+  const [reportPage, setReportPage] = useState(1)
+  const REPORT_PAGE_SIZE = 24
 
   const load = async () => {
+    const rid = ++latestLoadRef.current
     setLoading(true)
     setError('')
     try {
       const [obsRows, repRows] = await Promise.all([listObservations(), listReports()])
+      if (rid !== latestLoadRef.current) return
       setObservations(obsRows)
       setReports(repRows)
       setSelectedReportIds((prev) => {
@@ -110,9 +117,10 @@ export function ReportsPage() {
         return next
       })
     } catch (e) {
+      if (rid !== latestLoadRef.current) return
       setError(e.message || 'Unable to load report workspace')
     } finally {
-      setLoading(false)
+      if (rid === latestLoadRef.current) setLoading(false)
     }
   }
 
@@ -173,6 +181,12 @@ export function ReportsPage() {
     const start = (currentQueuePage - 1) * QUEUE_PAGE_SIZE
     return queueRows.slice(start, start + QUEUE_PAGE_SIZE)
   }, [queueRows, currentQueuePage])
+  const reportTotalPages = Math.max(1, Math.ceil(reports.length / REPORT_PAGE_SIZE))
+  const currentReportPage = Math.min(reportPage, reportTotalPages)
+  const pagedReports = useMemo(() => {
+    const start = (currentReportPage - 1) * REPORT_PAGE_SIZE
+    return reports.slice(start, start + REPORT_PAGE_SIZE)
+  }, [reports, currentReportPage])
   const sameProject = useMemo(
     () => selectedRows.length > 0 && new Set(selectedRows.map((o) => o.project_name)).size === 1,
     [selectedRows],
@@ -224,17 +238,37 @@ export function ReportsPage() {
     setBusy(true)
     setError('')
     setNotice('')
+    setOperationBanner('Queueing report generation…')
     try {
-      const report = await generateReport({
+      const accepted = await generateReport({
         observation_ids: observationIds,
         title: forcedTitle ?? (title.trim() || null),
         include_pdf: includePdf,
       })
-      setNotice(`Report #${report.id} generated.`)
+      if (accepted?.status === 'queued-offline') {
+        setNotice('Report request queued offline and will sync automatically.')
+        return
+      }
+      if (!accepted?.job_id || !accepted?.report_id) {
+        throw new Error('Report generation did not return a valid job.')
+      }
+      let jobStatus = 'queued'
+      while (jobStatus === 'queued' || jobStatus === 'processing') {
+        setOperationBanner(jobStatus === 'queued' ? 'Report queued…' : 'Generating report…')
+        await new Promise((r) => setTimeout(r, 1000))
+        const job = await getReportJob(accepted.job_id)
+        jobStatus = String(job?.status || '')
+      }
+      const report = await getReport(accepted.report_id)
+      if (report?.status !== 'ready') {
+        throw new Error(report?.error_message || 'Report generation failed')
+      }
+      setNotice(`Report #${accepted.report_id} generated.`)
       await load()
     } catch (e) {
       setError(e.message || 'Report generation failed')
     } finally {
+      setOperationBanner('')
       setBusy(false)
     }
   }
@@ -423,6 +457,7 @@ export function ReportsPage() {
         <div>
           <h2 className="text-[clamp(1.55rem,2.4vw,1.9rem)] font-semibold tracking-tight text-[#111]">Reports</h2>
           <p className="mt-1 text-[14px] text-[#6e6e73]">Select observations, configure a deck, generate, and export.</p>
+          {operationBanner ? <p className="mt-1 text-[12px] font-medium text-[#0071e3]">{operationBanner}</p> : null}
         </div>
         <div className="flex gap-2">
           <ButtonSecondary className="gap-1.5 px-4 py-2.5 text-[13px]" onClick={() => void load()}>
@@ -743,7 +778,7 @@ export function ReportsPage() {
           </div>
         ) : reports.length ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {reports.map((r) => (
+            {pagedReports.map((r) => (
               <motion.article
                 key={r.id}
                 ref={(node) => {
@@ -850,6 +885,29 @@ export function ReportsPage() {
             <p className="mt-1 text-[13px] text-[#6e6e73]">Select observations in the queue and generate your first deck.</p>
           </div>
         )}
+        {!loading && reports.length > REPORT_PAGE_SIZE ? (
+          <div className="mt-3 flex items-center justify-between px-1">
+            <p className="text-[12px] text-[#6e6e73]">
+              Deck page {currentReportPage} of {reportTotalPages}
+            </p>
+            <div className="flex gap-2">
+              <ButtonSecondary
+                className="px-2.5 py-1.5 text-[12px]"
+                onClick={() => setReportPage((p) => Math.max(1, p - 1))}
+                disabled={currentReportPage === 1}
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </ButtonSecondary>
+              <ButtonSecondary
+                className="px-2.5 py-1.5 text-[12px]"
+                onClick={() => setReportPage((p) => Math.min(reportTotalPages, p + 1))}
+                disabled={currentReportPage === reportTotalPages}
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </ButtonSecondary>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <AnimatePresence>

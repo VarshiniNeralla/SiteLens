@@ -1,10 +1,11 @@
-import { LayoutGrid, Presentation } from 'lucide-react'
+import { Activity, LayoutGrid, Presentation } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { NavLink } from 'react-router-dom'
 
 const items = [
   { to: '/workspace', end: false, label: 'Dashboard', icon: LayoutGrid },
   { to: '/output/reports', end: false, label: 'Reports', icon: Presentation },
+  { to: '/ops/monitor', end: false, label: 'Ops', icon: Activity },
 ]
 
 export function FloatingNav() {

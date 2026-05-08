@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
     cloudinary_folder: str = "SiteLens"
+    cloudinary_allowed_hosts: str = "res.cloudinary.com"
+    upload_max_bytes: int = 25 * 1024 * 1024
+    upload_chunk_bytes: int = 1024 * 1024
+    request_timeout_seconds: float = 30.0
+    report_worker_count: int = 2
+    upload_session_ttl_seconds: int = 60 * 60 * 6
+    resumable_chunk_size: int = 1024 * 512
+    breaker_failure_threshold: int = 5
+    breaker_window_seconds: int = 60
+    breaker_cooldown_seconds: int = 45
 
     @field_validator("ppt_template_path", mode="before")
     @classmethod
@@ -62,6 +72,9 @@ class Settings(BaseSettings):
 
     def cors_origins_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]
+
+    def cloudinary_allowed_hosts_list(self) -> list[str]:
+        return [x.strip().lower() for x in self.cloudinary_allowed_hosts.split(",") if x.strip()]
 
 
 settings = Settings()

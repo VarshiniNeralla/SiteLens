@@ -6,8 +6,15 @@ from fastapi.responses import FileResponse
 
 from app.api.deps import get_store_dep
 from app.domain import ReportRecord
-from app.schemas.report import ReportGenerateRequest, ReportOut, ReportSummaryOut, ReportUpdateRequest
-from app.services.report_service import generate_report_sync, get_report, list_reports, sitelens_xlsx_stem
+from app.schemas.report import (
+    ReportGenerateAccepted,
+    ReportGenerateRequest,
+    ReportOut,
+    ReportSummaryOut,
+    ReportUpdateRequest,
+)
+from app.services.report_jobs import job_manager
+from app.services.report_service import create_report_draft, get_report, list_reports, process_report_generation, sitelens_xlsx_stem
 from app.store import AppStore
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -58,20 +65,39 @@ def _build_download_basename_for_format(store: AppStore, row: ReportRecord, fmt:
     return _build_download_basename(store, row)
 
 
-@router.post("/generate", response_model=ReportOut)
+@router.post("/generate", response_model=ReportGenerateAccepted, status_code=202)
 def generate_report(
     payload: ReportGenerateRequest,
     store: AppStore = Depends(get_store_dep),
-) -> ReportOut:
+) -> ReportGenerateAccepted:
     try:
-        return generate_report_sync(
-            store,
+        draft = create_report_draft(
+            store=store,
             observation_ids=payload.observation_ids,
             title=payload.title,
             include_pdf=payload.include_pdf,
+            status="queued",
         )
+        job_id = job_manager.submit(
+            draft.id,
+            lambda: process_report_generation(store, report_id=draft.id),
+        )
+        return ReportGenerateAccepted(report_id=draft.id, job_id=job_id, status="queued")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/jobs/{job_id}")
+def get_report_job(job_id: str) -> dict[str, str | int | None]:
+    row = job_manager.get(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": row.job_id,
+        "report_id": row.report_id,
+        "status": row.status,
+        "error": row.error,
+    }
 
 
 @router.get("", response_model=list[ReportSummaryOut])
@@ -107,6 +133,7 @@ def _detail_report(report: ReportRecord) -> ReportOut:
         error_message=report.error_message,
         created_at=report.created_at,
         observation_ids=list(report.observation_ids),
+        include_pdf=report.include_pdf,
     )
 
 
@@ -186,6 +213,7 @@ def rename_report(
         error_message=row.error_message,
         created_at=row.created_at,
         observation_ids=list(row.observation_ids),
+        include_pdf=row.include_pdf,
     )
     store.upsert_report(updated)
     return _detail_report(updated)

@@ -5,8 +5,11 @@ import httpx
 
 from app.config import llm_chat_completions_url, settings
 from app.logging_config import get_logger
+from app.services.circuit_breaker import get_breaker
+from app.services.fault_injection import faults
 
 logger = get_logger(__name__)
+_BREAKER = get_breaker("llm")
 
 _AI_ERR_MAX = 480
 
@@ -40,23 +43,36 @@ Severity levels:
 
 
 def _chat(messages: list[dict[str, str]]) -> str:
-    url = llm_chat_completions_url()
-    payload = {
-        "model": settings.llm_model,
-        "messages": messages,
-        "temperature": 0.2,
-    }
-    logger.info("LLM POST %s (model=%s)", url, settings.llm_model)
-    with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
-        r = client.post(url, json=payload)
-        if not r.is_success:
-            logger.error(
-                "LLM HTTP %s — body snippet: %.500s",
-                r.status_code,
-                (r.text or "")[:500],
-            )
-        r.raise_for_status()
-        data = r.json()
+    if not _BREAKER.allow():
+        raise RuntimeError("AI service temporarily unavailable (circuit open)")
+    try:
+        mode = faults.apply("llm")
+        if mode == "outage":
+            raise RuntimeError("Injected LLM outage")
+        if mode == "malformed":
+            _BREAKER.record_failure()
+            return "{}"
+        url = llm_chat_completions_url()
+        payload = {
+            "model": settings.llm_model,
+            "messages": messages,
+            "temperature": 0.2,
+        }
+        logger.info("LLM POST %s (model=%s)", url, settings.llm_model)
+        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
+            r = client.post(url, json=payload)
+            if not r.is_success:
+                logger.error(
+                    "LLM HTTP %s — body snippet: %.500s",
+                    r.status_code,
+                    (r.text or "")[:500],
+                )
+            r.raise_for_status()
+            data = r.json()
+        _BREAKER.record_success()
+    except Exception:
+        _BREAKER.record_failure()
+        raise
     try:
         return str(data["choices"][0]["message"]["content"]).strip()
     except (KeyError, IndexError, TypeError) as e:
@@ -93,14 +109,24 @@ def _chat_with_maybe_image(*, text_prompt: str, image_url: str | None) -> str:
         "temperature": 0.2,
     }
     try:
+        mode = faults.apply("llm")
+        if mode == "outage":
+            raise RuntimeError("Injected LLM outage")
+        if mode == "malformed":
+            _BREAKER.record_failure()
+            return "{}"
+        if not _BREAKER.allow():
+            raise RuntimeError("AI service temporarily unavailable (circuit open)")
         with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
             r = client.post(url, json=payload)
             if not r.is_success:
                 logger.warning("Multimodal draft HTTP %s; falling back to text-only", r.status_code)
                 r.raise_for_status()
             data = r.json()
+        _BREAKER.record_success()
         return str(data["choices"][0]["message"]["content"]).strip()
     except Exception as exc:  # noqa: BLE001
+        _BREAKER.record_failure()
         logger.info("Multimodal draft unavailable (%s); retrying text-only.", exc)
         return _chat(
             [

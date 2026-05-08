@@ -4,7 +4,6 @@ import {
   ImageUp,
   LoaderCircle,
   Presentation,
-  Plus,
   ChevronDown,
   ChevronUp,
   Save,
@@ -16,7 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { createObservation, generateReport, uploadImageWithProgress } from '../api.js'
+import { createObservation, generateReport, getReport, getReportJob } from '../api.js'
 import { FormSelect } from '../components/FormSelect.jsx'
 import { ButtonPrimary, ButtonSecondary } from '../components/ui/Button.jsx'
 import {
@@ -30,6 +29,7 @@ import {
   THIRD_PARTY_INSPECTION_STATUSES,
   TOWERS,
 } from '../constants/observationFormOptions.js'
+import { listUploadSessions, uploadResumableFile } from '../utils/resumableUpload.js'
 
 const REQUIRED_KEYS = ['project_name', 'tower', 'floor', 'flat', 'room', 'observation_type', 'severity']
 const TOAST_TIMEOUT_MS = 2000
@@ -69,6 +69,7 @@ function createDraft(id) {
     uploading: false,
     saving: false,
     dirty: false,
+    uploadToken: 0,
   }
 }
 
@@ -150,6 +151,7 @@ export function WorkspacePage() {
   const [reportBusy, setReportBusy] = useState(false)
   const [reportNotice, setReportNotice] = useState('')
   const [reportReadyToast, setReportReadyToast] = useState(null)
+  const [activeOperation, setActiveOperation] = useState({ state: 'idle', label: '' })
   const [showDraftReveal, setShowDraftReveal] = useState(false)
   const [imageLoadState, setImageLoadState] = useState({})
   const [resetBusy, setResetBusy] = useState(false)
@@ -246,6 +248,25 @@ export function WorkspacePage() {
       setActiveId(items[0].id)
     }
   }, [items, activeId])
+
+  useEffect(() => {
+    void (async () => {
+      const sessions = await listUploadSessions()
+      if (!sessions.length) return
+      setReportNotice(`${sessions.length} interrupted upload(s) detected. Reattach matching files to resume.`)
+    })()
+  }, [])
+
+  useEffect(() => {
+    const hasInFlight = items.some((i) => i.uploading || i.saving || i.dirty) || reportBusy
+    if (!hasInFlight) return undefined
+    const onBeforeUnload = (e) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [items, reportBusy])
 
   const patchById = (id, mutator) => {
     setItems((prev) => updateById(prev, id, mutator))
@@ -376,6 +397,7 @@ export function WorkspacePage() {
     }
     const localUrl = URL.createObjectURL(file)
     localUrlRegistry.current.add(localUrl)
+    const uploadToken = Date.now()
     patchById(targetId, (prev) => {
       if (prev.localUrl?.startsWith('blob:')) {
         URL.revokeObjectURL(prev.localUrl)
@@ -397,15 +419,21 @@ export function WorkspacePage() {
         aiDraft: null,
         dirty: true,
         uploading: true,
+        uploadToken,
       }
     })
     setActiveId(targetId)
     setGlobalError('')
     try {
-      const uploaded = await uploadImageWithProgress(file, {
-        onProgress: (pct) => patchById(targetId, (prev) => ({ ...prev, uploadProgress: pct })),
+      const uploaded = await uploadResumableFile(file, {
+        key: `${targetId}:${file.name}:${file.size}:${file.lastModified}`,
+        onProgress: (pct) =>
+          patchById(targetId, (prev) =>
+            prev.uploadToken === uploadToken ? { ...prev, uploadProgress: pct } : prev
+          ),
       })
       patchById(targetId, (prev) => {
+        if (prev.uploadToken !== uploadToken) return prev
         if (prev.localUrl?.startsWith('blob:')) {
           URL.revokeObjectURL(prev.localUrl)
           localUrlRegistry.current.delete(prev.localUrl)
@@ -430,12 +458,16 @@ export function WorkspacePage() {
         }
       })
     } catch (e) {
-      patchById(targetId, (prev) => ({
-        ...prev,
-        uploading: false,
-        uploadStatus: 'error',
-        uploadError: e.message || 'Upload failed.',
-      }))
+      patchById(targetId, (prev) =>
+        prev.uploadToken === uploadToken
+          ? {
+              ...prev,
+              uploading: false,
+              uploadStatus: 'error',
+              uploadError: e.message || 'Upload failed.',
+            }
+          : prev
+      )
       setGlobalError(e.message || 'Upload failed.')
     }
   }
@@ -482,6 +514,15 @@ export function WorkspacePage() {
         generate_text: true,
       }
       const res = await createObservation(payload)
+      if (!res?.id || Number(res.id) <= 0) {
+        patchById(targetId, (prev) => ({
+          ...prev,
+          saving: false,
+          dirty: true,
+        }))
+        setReportNotice(res?.notice || 'Observation queued for sync.')
+        return
+      }
       const narrative =
         String(res.generated_observation || '').trim() || String(res.manually_written_observation || '').trim() || ''
       patchById(targetId, (prev) => ({
@@ -513,18 +554,37 @@ export function WorkspacePage() {
       return
     }
     setReportBusy(true)
+    setActiveOperation({ state: 'generating', label: 'Queueing report generation…' })
     setGlobalError('')
     setReportNotice('')
     setReportReadyToast(null)
     try {
-      const report = await generateReport({ observation_ids: savedIds, title: null, include_pdf: false })
+      const accepted = await generateReport({ observation_ids: savedIds, title: null, include_pdf: false })
+      if (!accepted?.job_id || !accepted?.report_id) {
+        throw new Error('Report generation did not return a valid job.')
+      }
+      let jobStatus = 'queued'
+      while (jobStatus === 'queued' || jobStatus === 'processing') {
+        setActiveOperation({
+          state: jobStatus === 'queued' ? 'processing' : 'generating',
+          label: jobStatus === 'queued' ? 'Report queued…' : 'Generating report…',
+        })
+        await new Promise((r) => setTimeout(r, 1000))
+        const job = await getReportJob(accepted.job_id)
+        jobStatus = String(job?.status || '')
+      }
+      const report = await getReport(accepted.report_id)
+      if (report?.status !== 'ready') {
+        throw new Error(report?.error_message || 'Report generation failed.')
+      }
       setReportReadyToast({
-        id: report.id,
+        id: accepted.report_id,
         message: 'Report generated successfully.',
       })
     } catch (e) {
       setGlobalError(e.message || 'Report generation failed.')
     } finally {
+      setActiveOperation({ state: 'idle', label: '' })
       setReportBusy(false)
     }
   }
@@ -775,6 +835,9 @@ export function WorkspacePage() {
             <h2 className="text-[18px] font-semibold tracking-tight text-[#111]">Observation Details</h2>
             <p className="mt-0.5 text-[12px] text-[#6e6e73]">Core fields first. Advanced fields only when needed.</p>
             {allCompleted ? <p className="mt-1 text-[12px] font-medium text-emerald-600">All observations completed.</p> : null}
+            {activeOperation.state !== 'idle' ? (
+              <p className="mt-1 text-[12px] font-medium text-[#0071e3]">{activeOperation.label}</p>
+            ) : null}
           </div>
 
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-[5.25rem] pr-1">

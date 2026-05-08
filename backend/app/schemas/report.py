@@ -27,6 +27,13 @@ class ReportOut(BaseModel):
     error_message: str | None
     created_at: datetime
     observation_ids: list[int]
+    include_pdf: bool = True
+
+
+class ReportGenerateAccepted(BaseModel):
+    report_id: int
+    job_id: str
+    status: str
 
 
 class ReportSummaryOut(BaseModel):

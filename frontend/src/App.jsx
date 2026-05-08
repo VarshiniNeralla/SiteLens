@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Shell } from './components/Shell.jsx'
 import { LandingPage } from './pages/Landing.jsx'
+import { OpsPage } from './pages/Ops.jsx'
 import { ReportsPage } from './pages/Reports.jsx'
 import { WorkspacePage } from './pages/Workspace.jsx'
 
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="/capture/upload" element={<WorkspacePage />} />
           <Route path="/capture/observations" element={<WorkspacePage />} />
           <Route path="/output/reports" element={<ReportsPage />} />
+          <Route path="/ops/monitor" element={<OpsPage />} />
           {/* Backward compatibility redirects */}
           <Route path="/upload" element={<Navigate to="/capture/upload" replace />} />
           <Route path="/observations/new" element={<Navigate to="/capture/observations" replace />} />

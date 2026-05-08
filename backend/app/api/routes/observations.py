@@ -1,9 +1,13 @@
 from pathlib import Path
+import ipaddress
+import socket
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_store_dep
+from app.config import settings
 from app.schemas.observation import ObservationCreate, ObservationOut, ObservationUpdate
 from app.services import observation_service
 from app.store import AppStore
@@ -16,12 +20,39 @@ def _verify_image_reference(uri: str) -> None:
     if not s:
         raise HTTPException(status_code=400, detail="Image reference is empty")
     if s.startswith("http://") or s.startswith("https://"):
+        parsed = urlparse(s)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise HTTPException(status_code=400, detail="Image URL host is invalid")
+        allowed = settings.cloudinary_allowed_hosts_list()
+        if allowed and not any(host == h or host.endswith(f".{h}") for h in allowed):
+            raise HTTPException(status_code=400, detail="Image URL host is not allowed")
         try:
-            with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+            resolved_ips = socket.gethostbyname_ex(host)[2]
+        except socket.gaierror as e:
+            raise HTTPException(status_code=400, detail=f"Image URL host lookup failed: {e}") from e
+        for ip_raw in resolved_ips:
+            ip = ipaddress.ip_address(ip_raw)
+            if any(
+                (
+                    ip.is_private,
+                    ip.is_loopback,
+                    ip.is_link_local,
+                    ip.is_reserved,
+                    ip.is_multicast,
+                    ip.is_unspecified,
+                )
+            ):
+                raise HTTPException(status_code=400, detail="Image URL resolves to a blocked address")
+        try:
+            with httpx.Client(timeout=12.0, follow_redirects=False) as client:
                 r = client.head(s)
                 if r.status_code >= 400:
                     r = client.get(s, headers={"Range": "bytes=0-8191"})
                 r.raise_for_status()
+                ctype = (r.headers.get("content-type") or "").lower()
+                if not ctype.startswith("image/"):
+                    raise HTTPException(status_code=400, detail="Image URL must return an image content type")
         except httpx.HTTPError as e:
             raise HTTPException(
                 status_code=400,

@@ -11,9 +11,11 @@ venv/
 backend/uploads/
 backend/reports/
 backend/data/app_store.json
+backend/data/upload_sessions/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+chaos/results/
 
 # Env & OS
 .env
