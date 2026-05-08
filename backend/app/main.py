@@ -12,6 +12,7 @@ from app.api.routes import observations, ops, reports, upload
 from app.config import settings
 from app.logging_config import get_logger, setup_logging
 from app.services import cloudinary_service
+from app.services import llm_service
 from app.services.report_jobs import job_manager
 from app.services.report_service import process_report_generation
 from app.store import MongoConnectionManager
@@ -55,6 +56,15 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         logger.info("Cloudinary disabled reason=%s", cloudinary_health.get("reason"))
     else:
         logger.warning("Cloudinary degraded reason=%s", cloudinary_health.get("reason"))
+    llm_health = await llm_service.provider_health_safe()
+    if llm_health.available:
+        logger.info(
+            "AI provider ready provider=%s latency_ms=%s",
+            llm_health.provider,
+            llm_health.latency_ms,
+        )
+    else:
+        logger.warning("AI provider degraded provider=%s reason=%s", llm_health.provider, llm_health.detail)
     recovered = await job_manager.recover_pending(
         store,
         lambda report_id: (lambda: process_report_generation(store, report_id=report_id)),

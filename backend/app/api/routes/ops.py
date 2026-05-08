@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.api.deps import get_store_dep
 from app.services.circuit_breaker import all_breaker_snapshots
 from app.services.fault_injection import faults
+from app.services import llm_service
 from app.services.report_jobs import job_manager
 from app.services.upload_sessions import UploadSessionStore
 from app.store import AppStore
@@ -74,6 +75,8 @@ async def ops_health(request: Request, store: AppStore = Depends(get_store_dep))
     await sessions_store.cleanup_expired()
     active_uploads = len([s for s in await sessions_store.list_sessions() if s.status == "active"])
     mongo = await store.mongo_health()
+    llm_health = await llm_service.provider_health_safe()
+    llm_metrics = llm_service.provider_runtime_metrics()
     return {
         "counts": {
             "reports_total": len(reports),
@@ -83,6 +86,15 @@ async def ops_health(request: Request, store: AppStore = Depends(get_store_dep))
             "active_upload_sessions": active_uploads,
         },
         "database": mongo,
+        "ai_provider": {
+            "active_provider": llm_metrics["active_provider"],
+            "available": llm_health.available,
+            "latency_ms": llm_health.latency_ms,
+            "last_response_ms": llm_metrics["last_response_ms"],
+            "last_failure": llm_metrics["last_failure"],
+            "failure_count": int(llm_metrics["breaker"].get("total_failures") or 0),
+            "circuit_state": llm_metrics["breaker"].get("state"),
+        },
         "breakers": all_breaker_snapshots(),
     }
 
@@ -119,6 +131,13 @@ async def ops_overview(request: Request, store: AppStore = Depends(get_store_dep
         _service_health_from_breaker("Cloudinary", breaker_map.get("cloudinary")),
         _service_health_from_breaker("Export Engine", breaker_map.get("export_engine")),
     ]
+    llm_health = await llm_service.provider_health_safe()
+    llm_metrics = llm_service.provider_runtime_metrics()
+    deps[0]["provider"] = llm_metrics["active_provider"]
+    deps[0]["provider_available"] = llm_health.available
+    deps[0]["provider_latency_ms"] = llm_health.latency_ms
+    deps[0]["last_ai_response_ms"] = llm_metrics["last_response_ms"]
+    deps[0]["failure_count"] = int(llm_metrics["breaker"].get("total_failures") or 0)
     mongo = await store.mongo_health()
     deps.append(
         {

@@ -1,11 +1,14 @@
-import re
+import json
 import time
 from dataclasses import dataclass
 
 import httpx
+from pydantic import ValidationError
 
-from app.config import llm_chat_completions_url, settings
+from app.config import settings
 from app.logging_config import get_logger
+from app.services.llm.factory import get_llm_provider
+from app.services.llm.schemas import LlmNormalizedResponse, ProviderHealth
 from app.services.circuit_breaker import get_breaker
 from app.services.fault_injection import faults
 
@@ -23,134 +26,71 @@ class LlmObservationDraftResult:
     ai_status: str  # "completed" | "failed" | "unavailable"
     ai_error_public: str | None
 
-SYSTEM_PROMPT = """You are a professional construction quality walkthrough reporting assistant.
-
-Your role:
-
-* generate concise technical observations
-* maintain formal engineering language
-* avoid hallucinations
-* avoid assumptions
-* never fabricate measurements
-* generate short professional recommendations
-* use clean report-ready formatting
-
-Severity levels:
-
-* Minor
-* Moderate
-* Major
-* Critical"""
+_last_ai_response_ms: float | None = None
+_last_ai_failure: str | None = None
 
 
-def _chat(messages: list[dict[str, str]]) -> str:
+def _provider() -> str:
+    return (settings.llm_provider or "local").strip().lower()
+
+
+def _normalize_fallback(provider_name: str) -> LlmNormalizedResponse:
+    return LlmNormalizedResponse(
+        observation="",
+        severity="",
+        recommendation="",
+        confidence="",
+        provider=provider_name,
+    )
+
+
+async def _invoke_provider(
+    *,
+    op: str,
+    prompt: str,
+    image_url: str | None = None,
+    retry_on_malformed: bool = True,
+) -> LlmNormalizedResponse:
+    global _last_ai_response_ms, _last_ai_failure  # noqa: PLW0603
     if not _BREAKER.allow():
         raise RuntimeError("AI service temporarily unavailable (circuit open)")
     started = time.perf_counter()
+    provider = get_llm_provider()
+    mode = faults.apply("llm")
+    if mode == "outage":
+        _BREAKER.record_failure()
+        _last_ai_failure = "Injected LLM outage"
+        raise RuntimeError("Injected LLM outage")
+    if mode == "malformed":
+        _BREAKER.record_failure()
+        _last_ai_failure = "Injected malformed LLM response"
+        if retry_on_malformed:
+            return await _invoke_provider(op=op, prompt=prompt, image_url=image_url, retry_on_malformed=False)
+        return _normalize_fallback(provider.name)
     try:
-        mode = faults.apply("llm")
-        if mode == "outage":
-            raise RuntimeError("Injected LLM outage")
-        if mode == "malformed":
-            _BREAKER.record_failure()
-            return "{}"
-        url = llm_chat_completions_url()
-        payload = {
-            "model": settings.llm_model,
-            "messages": messages,
-            "temperature": 0.2,
-        }
-        logger.info("LLM POST %s (model=%s)", url, settings.llm_model)
-        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
-            r = client.post(url, json=payload)
-            if not r.is_success:
-                logger.error(
-                    "LLM HTTP %s — body snippet: %.500s",
-                    r.status_code,
-                    (r.text or "")[:500],
-                )
-            r.raise_for_status()
-            data = r.json()
-        _BREAKER.record_success(latency_ms=(time.perf_counter() - started) * 1000.0, retries=0)
+        if op == "analyze_image":
+            resp = await provider.analyze_image(prompt=prompt, image_url=image_url)
+        elif op == "generate_recommendation":
+            resp = await provider.generate_recommendation(prompt=prompt, image_url=image_url)
+        else:
+            resp = await provider.generate_observation(prompt=prompt, image_url=image_url)
+        _last_ai_response_ms = (time.perf_counter() - started) * 1000.0
+        _last_ai_failure = None
+        _BREAKER.record_success(latency_ms=_last_ai_response_ms)
+        return resp
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0, retries=1 if retry_on_malformed else 0)
+        _last_ai_failure = str(exc)
+        if retry_on_malformed:
+            return await _invoke_provider(op=op, prompt=prompt, image_url=image_url, retry_on_malformed=False)
+        return _normalize_fallback(provider.name)
     except Exception:
-        _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0, retries=0)
+        _BREAKER.record_failure(latency_ms=(time.perf_counter() - started) * 1000.0)
+        _last_ai_failure = "provider_call_failed"
         raise
-    try:
-        return str(data["choices"][0]["message"]["content"]).strip()
-    except (KeyError, IndexError, TypeError) as e:
-        logger.error("Unexpected LLM response shape: %s", data)
-        raise ValueError("Invalid response from language model") from e
 
 
-def _chat_with_maybe_image(*, text_prompt: str, image_url: str | None) -> str:
-    """
-    Try multimodal chat when an HTTP image URL exists.
-    Falls back to text-only chat for models/endpoints that don't support image parts.
-    """
-    if not image_url:
-        return _chat(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text_prompt},
-            ]
-        )
-
-    url = llm_chat_completions_url()
-    payload = {
-        "model": settings.llm_model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text_prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ],
-            },
-        ],
-        "temperature": 0.2,
-    }
-    try:
-        started = time.perf_counter()
-        mode = faults.apply("llm")
-        if mode == "outage":
-            raise RuntimeError("Injected LLM outage")
-        if mode == "malformed":
-            _BREAKER.record_failure()
-            return "{}"
-        if not _BREAKER.allow():
-            raise RuntimeError("AI service temporarily unavailable (circuit open)")
-        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
-            r = client.post(url, json=payload)
-            if not r.is_success:
-                logger.warning("Multimodal draft HTTP %s; falling back to text-only", r.status_code)
-                r.raise_for_status()
-            data = r.json()
-        _BREAKER.record_success(latency_ms=(time.perf_counter() - started) * 1000.0, retries=0)
-        return str(data["choices"][0]["message"]["content"]).strip()
-    except Exception as exc:  # noqa: BLE001
-        _BREAKER.record_failure(retries=1)
-        logger.info("Multimodal draft unavailable (%s); retrying text-only.", exc)
-        return _chat(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text_prompt},
-            ]
-        )
-
-
-def parse_observation_and_recommendation(raw: str) -> tuple[str, str]:
-    obs_m = re.search(
-        r"(?is)OBSERVATION:\s*(.*?)(?=RECOMMENDATION:|$)",
-        raw,
-    )
-    rec_m = re.search(r"(?is)RECOMMENDATION:\s*(.*)$", raw)
-    observation = obs_m.group(1).strip() if obs_m else raw.strip()
-    recommendation = rec_m.group(1).strip() if rec_m else ""
-    return observation, recommendation
-
-
-def generate_observation_text_safe(
+async def generate_observation_text_safe(
     *,
     tower: str,
     floor: str,
@@ -168,7 +108,7 @@ def generate_observation_text_safe(
     Never raises — observation persistence must never depend on the LLM.
     """
     try:
-        obs, rec = generate_observation_text(
+        obs, rec = await generate_observation_text(
             tower=tower,
             floor=floor,
             flat=flat,
@@ -181,6 +121,8 @@ def generate_observation_text_safe(
             third_party_status=third_party_status,
             image_url=image_url,
         )
+        if not (obs or rec):
+            return LlmObservationDraftResult("", "", False, "unavailable", "AI response unavailable")
         return LlmObservationDraftResult(obs, rec, True, "completed", None)
     except ValueError as exc:
         msg = _short_exc(exc)
@@ -196,9 +138,12 @@ def generate_observation_text_safe(
         return LlmObservationDraftResult("", "", False, "unavailable", msg)
 
 
-def generate_report_summary_safe(project_name: str, observation_notes: list[str]) -> str:
+async def generate_report_summary_safe(project_name: str, observation_notes: list[str]) -> str:
     try:
-        return generate_report_summary(project_name, observation_notes)
+        out = await generate_report_summary(project_name, observation_notes)
+        if not out.strip():
+            return _fallback_exec_summary(project_name, observation_notes, "drafting returned empty output")
+        return out
     except httpx.HTTPError as exc:
         logger.warning("Report summary LLM HTTP failure: %s", exc)
         return _fallback_exec_summary(project_name, observation_notes, "drafting service unreachable")
@@ -225,7 +170,7 @@ def _short_exc(exc: BaseException) -> str:
     return s or type(exc).__name__
 
 
-def generate_observation_text(
+async def generate_observation_text(
     *,
     tower: str,
     floor: str,
@@ -267,11 +212,11 @@ Rules:
 - If visual evidence is weak, explicitly keep language cautious.
 - Keep each section concise (typically 3–6 sentences total across both sections unless severity is Critical)."""
 
-    raw = _chat_with_maybe_image(text_prompt=user, image_url=image_url)
-    return parse_observation_and_recommendation(raw)
+    resp = await _invoke_provider(op="generate_observation", prompt=user, image_url=image_url)
+    return (resp.observation.strip(), resp.recommendation.strip())
 
 
-def generate_report_summary(project_name: str, observation_notes: list[str]) -> str:
+async def generate_report_summary(project_name: str, observation_notes: list[str]) -> str:
     joined = "\n".join(f"- {t}" for t in observation_notes if t.strip())
     user = f"""Project: {project_name}
 
@@ -283,9 +228,22 @@ Observations:
 
 Respond with plain text only (no JSON, no bullet labels)."""
 
-    return _chat(
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user},
-        ]
-    )
+    resp = await _invoke_provider(op="generate_recommendation", prompt=user, image_url=None)
+    return (resp.observation or resp.recommendation or "").strip()
+
+
+async def provider_health_safe() -> ProviderHealth:
+    try:
+        health = await get_llm_provider().health_check()
+        return health
+    except Exception as exc:  # noqa: BLE001
+        return ProviderHealth(provider=_provider(), available=False, latency_ms=None, detail=str(exc))
+
+
+def provider_runtime_metrics() -> dict[str, object]:
+    return {
+        "active_provider": _provider(),
+        "last_response_ms": round(_last_ai_response_ms, 1) if _last_ai_response_ms is not None else None,
+        "last_failure": _last_ai_failure,
+        "breaker": _BREAKER.snapshot(),
+    }

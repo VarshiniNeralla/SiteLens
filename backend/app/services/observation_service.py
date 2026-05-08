@@ -98,7 +98,7 @@ async def create_observation(store: AppStore, body: ObservationCreate) -> Observ
     await store.add_observation(obs)
 
     if body.generate_text:
-        result = llm_service.generate_observation_text_safe(
+        result = await llm_service.generate_observation_text_safe(
             tower=body.tower,
             floor=body.floor,
             flat=body.flat,
@@ -157,7 +157,7 @@ async def update_observation(
     obs = replace(old, **patches) if patches else old
 
     if regenerate:
-        result = llm_service.generate_observation_text_safe(
+        result = await llm_service.generate_observation_text_safe(
             tower=obs.tower,
             floor=obs.floor,
             flat=obs.flat,

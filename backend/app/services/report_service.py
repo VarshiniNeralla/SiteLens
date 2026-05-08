@@ -58,7 +58,7 @@ async def create_report_draft(
     proj_name = project_names.pop()
     report_title = title or f"Quality walkthrough — {proj_name}"
     narrative_lines = [observation_text.effective_observation_narrative(o) for o in ordered]
-    summary_text = llm_service.generate_report_summary_safe(proj_name, narrative_lines)
+    summary_text = await llm_service.generate_report_summary_safe(proj_name, narrative_lines)
     pid = ordered[0].project_id
     rid = await store.allocate_report_id()
     oid_list = [o.id for o in ordered]

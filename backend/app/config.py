@@ -18,6 +18,8 @@ class Settings(BaseSettings):
 
     llm_model: str = "default"
     llm_timeout_seconds: float = 120.0
+    llm_provider: str = "local"
+    groq_api_key: str = ""
 
     upload_dir: Path = Path("uploads")
     reports_dir: Path = Path("reports")
